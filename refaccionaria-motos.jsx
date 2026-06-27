@@ -6,7 +6,8 @@ import {
 import Papa from "papaparse";
 import {
   Plus, Upload, TrendingUp, Wallet, Package, Trash2, Sparkles, Check, X, Loader2,
-  AlertTriangle, ShoppingCart, Search, Pencil, Boxes, DollarSign, Receipt, BarChart3, Printer
+  AlertTriangle, ShoppingCart, Search, Pencil, Boxes, DollarSign, Receipt, BarChart3, Printer,
+  LogOut, Store, ImagePlus, Shield, ArrowRight
 } from "lucide-react";
 
 const fmt = (n) =>
@@ -20,43 +21,292 @@ const EXPENSE_CATS = ["Compra a proveedor", "Renta", "Servicios (luz/agua/intern
 const uid = () => crypto.randomUUID();
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
-export default function RefaccionariaApp() {
+const DEFAULT_ACCENT = "#d4af37";
+const ACCENT_PRESETS = ["#d4af37", "#e2574c", "#2ecc71", "#3fa9f5", "#9b59b6", "#e8852b", "#1abc9c", "#ec4899"];
+
+// Convierte un archivo de imagen a un dataURL pequeño (máx 240px) para guardar el logo
+function fileToLogo(file, cb) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const img = new Image();
+    img.onload = () => {
+      const max = 240;
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      try { cb(canvas.toDataURL("image/png")); } catch (err) { cb(e.target.result); }
+    };
+    img.onerror = () => cb(e.target.result);
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function GlobalStyles() {
+  return (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap');
+      .sg { font-family: 'Space Grotesk', sans-serif; }
+      * { box-sizing: border-box; }
+      input, select { background:#161d29; border:1px solid #29323f; color:#e9ecf1; border-radius:8px; padding:9px 11px; font-size:14px; outline:none; }
+      input:focus, select:focus { border-color:var(--accent); }
+      button { cursor:pointer; }
+      ::-webkit-scrollbar{width:6px;height:6px} ::-webkit-scrollbar-thumb{background:#29323f;border-radius:4px}
+      .spin { animation: spin 1s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      textarea { background:#161d29; border:1px solid #29323f; color:#e9ecf1; border-radius:8px; padding:10px 12px; font-size:13px; outline:none; }
+      textarea:focus { border-color:var(--accent); }
+      table { width:100%; border-collapse:collapse; }
+      th { text-align:left; font-size:11px; color:#8a93a3; font-weight:600; padding:8px 8px; border-bottom:1px solid #29323f; }
+      td { font-size:13px; padding:9px 8px; border-bottom:1px solid #20283480; }
+      @media print {
+        body * { visibility: hidden !important; }
+        .ticket-print, .ticket-print * { visibility: visible !important; }
+        .ticket-print { position: absolute; left: 0; top: 0; width: 80mm; margin: 0; padding: 4mm; color: #000; background: #fff; }
+        .no-print { display: none !important; }
+        @page { size: 80mm auto; margin: 0; }
+      }
+    `}</style>
+  );
+}
+
+export default function RefaccionariaSaaS() {
+  const [orgs, setOrgs] = useState([]);
+  const [activeOrgId, setActiveOrgId] = useState(null);
+  const [screen, setScreen] = useState("admin");
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      let list = [];
+      try { const r = await window.storage.get("refa:orgs"); if (r && r.value) list = JSON.parse(r.value); } catch (e) {}
+      if (!Array.isArray(list) || list.length === 0) {
+        const id = uid();
+        list = [{ id, name: "Mi Refaccionaria", logo: "", accent: DEFAULT_ACCENT, createdAt: todayStr() }];
+        // Migra datos de la versión anterior (un solo negocio) hacia la primera organización
+        for (const k of ["parts", "sales", "expenses", "shop"]) {
+          try { const old = await window.storage.get("refa:" + k); if (old && old.value) await window.storage.set(`refa:org:${id}:${k}`, old.value); } catch (e) {}
+        }
+        try { await window.storage.set("refa:orgs", JSON.stringify(list)); } catch (e) {}
+      }
+      setOrgs(list);
+      setLoaded(true);
+    })();
+  }, []);
+
+  useEffect(() => { if (loaded) window.storage.set("refa:orgs", JSON.stringify(orgs)).catch(() => {}); }, [orgs, loaded]);
+
+  const activeOrg = orgs.find(o => o.id === activeOrgId);
+  const enter = (id) => { setActiveOrgId(id); setScreen("shop"); };
+
+  return (
+    <>
+      <GlobalStyles />
+      {screen === "shop" && activeOrg
+        ? <ShopApp key={activeOrg.id} org={activeOrg} onExit={() => setScreen("admin")} />
+        : <AdminPanel orgs={orgs} setOrgs={setOrgs} onEnter={enter} />}
+    </>
+  );
+}
+
+/* ---------- Panel de administrador (multi-refaccionaria) ---------- */
+function AdminPanel({ orgs, setOrgs, onEnter }) {
+  const blank = { name: "", logo: "", accent: DEFAULT_ACCENT };
+  const [form, setForm] = useState(blank);
+  const [editId, setEditId] = useState(null);
+  const [delId, setDelId] = useState(null);
+
+  const accent = form.accent || DEFAULT_ACCENT;
+
+  const save = () => {
+    if (!form.name.trim()) return;
+    if (editId) {
+      setOrgs(prev => prev.map(o => o.id === editId ? { ...o, name: form.name.trim(), logo: form.logo, accent } : o));
+    } else {
+      setOrgs(prev => [...prev, { id: uid(), name: form.name.trim(), logo: form.logo, accent, createdAt: todayStr() }]);
+    }
+    setForm(blank); setEditId(null);
+  };
+  const edit = (o) => { setEditId(o.id); setForm({ name: o.name, logo: o.logo || "", accent: o.accent || DEFAULT_ACCENT }); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  const remove = (id) => {
+    setOrgs(prev => prev.filter(o => o.id !== id));
+    for (const k of ["parts", "sales", "expenses", "shop"]) {
+      try {
+        if (window.storage && typeof window.storage.delete === "function") window.storage.delete(`refa:org:${id}:${k}`);
+        else window.storage.set(`refa:org:${id}:${k}`, "").catch(() => {});
+      } catch (e) {}
+    }
+    setDelId(null);
+    if (editId === id) { setEditId(null); setForm(blank); }
+  };
+
+  return (
+    <div style={{ "--accent": accent, "--accent-soft": accent + "22", minHeight: "100vh", background: "#0c1118", color: "#e9ecf1", fontFamily: "'Inter', system-ui, sans-serif" }}>
+      <div style={{ maxWidth: 1040, margin: "0 auto", padding: "24px 20px" }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+          <Shield size={22} color="var(--accent)" />
+          <div className="sg" style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.5 }}>Panel de administrador</div>
+        </div>
+        <div style={{ fontSize: 13, color: "#8a93a3", marginBottom: 22 }}>
+          Crea y personaliza las refaccionarias de tu plataforma. Cada una tiene su nombre, logo, colores y datos por separado.
+        </div>
+
+        {/* Crear / editar */}
+        <Card style={{ marginBottom: 22 }}>
+          <SectionTitle icon={editId ? Pencil : Store}>{editId ? "Editar refaccionaria" : "Nueva refaccionaria"}</SectionTitle>
+          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 16, alignItems: "start" }}>
+            {/* Logo */}
+            <div style={{ textAlign: "center" }}>
+              <label style={{ cursor: "pointer", display: "block" }}>
+                <div style={{ width: 96, height: 96, borderRadius: 14, border: "1px dashed #3a4452", background: "#0c1118", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                  {form.logo
+                    ? <img src={form.logo} alt="logo" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    : <div style={{ textAlign: "center", color: "#5a6372" }}><ImagePlus size={22} /><div style={{ fontSize: 10, marginTop: 4 }}>Subir logo</div></div>}
+                </div>
+                <input type="file" accept="image/*" hidden onChange={e => e.target.files[0] && fileToLogo(e.target.files[0], (d) => setForm(f => ({ ...f, logo: d })))} />
+              </label>
+              {form.logo && <button onClick={() => setForm(f => ({ ...f, logo: "" }))} style={{ ...btnGhost, padding: "4px 10px", fontSize: 11, marginTop: 6 }}>Quitar</button>}
+            </div>
+            {/* Datos */}
+            <div>
+              <label style={lbl}>Nombre del negocio</label>
+              <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Ej. Refaccionaria El Pistón" style={{ width: "100%", marginBottom: 12 }} />
+              <label style={lbl}>Color de la marca</label>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <input type="color" value={accent} onChange={e => setForm(f => ({ ...f, accent: e.target.value }))} style={{ width: 44, height: 36, padding: 2, cursor: "pointer" }} />
+                <span style={{ fontSize: 12, color: "#8a93a3", fontFamily: "monospace" }}>{accent}</span>
+                <div style={{ display: "flex", gap: 6, marginLeft: 6 }}>
+                  {ACCENT_PRESETS.map(c => (
+                    <button key={c} onClick={() => setForm(f => ({ ...f, accent: c }))} title={c}
+                      style={{ width: 22, height: 22, borderRadius: 6, background: c, border: accent.toLowerCase() === c.toLowerCase() ? "2px solid #fff" : "1px solid #29323f" }} />
+                  ))}
+                </div>
+              </div>
+
+              {/* Vista previa */}
+              <div style={{ marginTop: 16 }}>
+                <label style={lbl}>Vista previa</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#0c1118", border: "1px solid #29323f", borderRadius: 12, padding: 12 }}>
+                  {form.logo
+                    ? <img src={form.logo} alt="" style={{ width: 38, height: 38, borderRadius: 9, objectFit: "cover" }} />
+                    : <div style={{ width: 38, height: 38, borderRadius: 9, background: accent + "22", display: "flex", alignItems: "center", justifyContent: "center" }}><Boxes size={20} color={accent} /></div>}
+                  <div style={{ flex: 1 }}>
+                    <div className="sg" style={{ fontSize: 15, fontWeight: 700 }}>{form.name || "Nombre del negocio"}</div>
+                    <div style={{ height: 4, width: 90, background: accent, borderRadius: 3, marginTop: 5 }} />
+                  </div>
+                  <span style={{ background: accent, color: "#0c1118", fontWeight: 700, fontSize: 12, borderRadius: 8, padding: "7px 12px" }}>Botón</span>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+                <button onClick={save} disabled={!form.name.trim()} style={{ ...btnGold, opacity: form.name.trim() ? 1 : 0.5 }}>
+                  <Check size={15} /> {editId ? "Guardar cambios" : "Crear refaccionaria"}
+                </button>
+                {editId && <button onClick={() => { setEditId(null); setForm(blank); }} style={btnGhost}><X size={15} /> Cancelar</button>}
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        {/* Listado */}
+        <SectionTitle icon={Store}>Refaccionarias ({orgs.length})</SectionTitle>
+        {orgs.length === 0 ? (
+          <EmptyState text="Aún no hay refaccionarias. Crea la primera arriba." />
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
+            {orgs.map(o => (
+              <div key={o.id} style={{ background: "#161d29", border: "1px solid #29323f", borderRadius: 14, padding: 16, borderTop: `3px solid ${o.accent || DEFAULT_ACCENT}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                  {o.logo
+                    ? <img src={o.logo} alt="" style={{ width: 42, height: 42, borderRadius: 10, objectFit: "cover" }} />
+                    : <div style={{ width: 42, height: 42, borderRadius: 10, background: (o.accent || DEFAULT_ACCENT) + "22", display: "flex", alignItems: "center", justifyContent: "center" }}><Boxes size={22} color={o.accent || DEFAULT_ACCENT} /></div>}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="sg" style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{o.name}</div>
+                    <div style={{ fontSize: 11, color: "#5a6372", display: "flex", alignItems: "center", gap: 5 }}>
+                      <span style={{ width: 10, height: 10, borderRadius: 3, background: o.accent || DEFAULT_ACCENT, display: "inline-block" }} />
+                      {o.createdAt || ""}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => onEnter(o.id)} style={{ ...btnGold, flex: 1, justifyContent: "center", padding: "8px 0" }}>
+                    Entrar <ArrowRight size={15} />
+                  </button>
+                  <button onClick={() => edit(o)} style={{ ...btnGhost, padding: "8px 10px" }} title="Editar"><Pencil size={14} /></button>
+                  <button onClick={() => setDelId(o.id)} style={{ ...btnDanger, padding: "8px 10px" }} title="Eliminar"><Trash2 size={14} /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Confirmación de borrado */}
+      {delId && (() => {
+        const o = orgs.find(x => x.id === delId);
+        return (
+          <div onClick={() => setDelId(null)} style={{ position: "fixed", inset: 0, background: "#000a", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, zIndex: 60 }}>
+            <div onClick={e => e.stopPropagation()} style={{ width: 400, maxWidth: "100%", background: "#161d29", border: "1px solid #e25c5c", borderRadius: 14, padding: 22 }}>
+              <div className="sg" style={{ fontSize: 16, fontWeight: 700, color: "#e25c5c", display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <AlertTriangle size={18} /> ¿Eliminar "{o?.name}"?
+              </div>
+              <div style={{ fontSize: 13, color: "#c4ccd8", marginBottom: 18, lineHeight: 1.5 }}>
+                Se borrará la refaccionaria junto con todo su inventario, ventas y gastos. Esta acción no se puede deshacer.
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setDelId(null)} style={{ ...btnGhost, flex: 1, justifyContent: "center" }}><X size={15} /> Cancelar</button>
+                <button onClick={() => remove(delId)} style={{ ...btnDanger, flex: 1, justifyContent: "center" }}><Trash2 size={15} /> Sí, eliminar</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+function ShopApp({ org, onExit }) {
+  const K = (k) => `refa:org:${org.id}:${k}`;
+  const accent = org.accent || "#d4af37";
   const [tab, setTab] = useState("tablero");
   const [parts, setParts] = useState([]);
   const [sales, setSales] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [toast, setToast] = useState(null);
-  const [shop, setShop] = useState({ name: "Refaccionaria de Motos", phone: "", address: "", footer: "¡Gracias por su compra!" });
+  const [shop, setShop] = useState({ name: org.name, phone: "", address: "", footer: "¡Gracias por su compra!" });
   const [ticketSale, setTicketSale] = useState(null);
 
-  // --- Persistence ---
+  // --- Persistence (por organización) ---
   useEffect(() => {
     (async () => {
       try {
-        const r = await window.storage.get("refa:parts");
+        const r = await window.storage.get(K("parts"));
         if (r && r.value) setParts(JSON.parse(r.value));
       } catch (e) {}
       try {
-        const r = await window.storage.get("refa:sales");
+        const r = await window.storage.get(K("sales"));
         if (r && r.value) setSales(JSON.parse(r.value));
       } catch (e) {}
       try {
-        const r = await window.storage.get("refa:expenses");
+        const r = await window.storage.get(K("expenses"));
         if (r && r.value) setExpenses(JSON.parse(r.value));
       } catch (e) {}
       try {
-        const r = await window.storage.get("refa:shop");
+        const r = await window.storage.get(K("shop"));
         if (r && r.value) setShop(prev => ({ ...prev, ...JSON.parse(r.value) }));
       } catch (e) {}
       setLoaded(true);
     })();
   }, []);
 
-  useEffect(() => { if (loaded) window.storage.set("refa:parts", JSON.stringify(parts)).catch(() => {}); }, [parts, loaded]);
-  useEffect(() => { if (loaded) window.storage.set("refa:sales", JSON.stringify(sales)).catch(() => {}); }, [sales, loaded]);
-  useEffect(() => { if (loaded) window.storage.set("refa:expenses", JSON.stringify(expenses)).catch(() => {}); }, [expenses, loaded]);
-  useEffect(() => { if (loaded) window.storage.set("refa:shop", JSON.stringify(shop)).catch(() => {}); }, [shop, loaded]);
+  useEffect(() => { if (loaded) window.storage.set(K("parts"), JSON.stringify(parts)).catch(() => {}); }, [parts, loaded]);
+  useEffect(() => { if (loaded) window.storage.set(K("sales"), JSON.stringify(sales)).catch(() => {}); }, [sales, loaded]);
+  useEffect(() => { if (loaded) window.storage.set(K("expenses"), JSON.stringify(expenses)).catch(() => {}); }, [expenses, loaded]);
+  useEffect(() => { if (loaded) window.storage.set(K("shop"), JSON.stringify(shop)).catch(() => {}); }, [shop, loaded]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2400); };
 
@@ -85,44 +335,26 @@ export default function RefaccionariaApp() {
   const monthNet = monthGross - monthOpex;
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0c1118", color: "#e9ecf1", fontFamily: "'Inter', system-ui, sans-serif" }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap');
-        .sg { font-family: 'Space Grotesk', sans-serif; }
-        * { box-sizing: border-box; }
-        input, select { background:#161d29; border:1px solid #29323f; color:#e9ecf1; border-radius:8px; padding:9px 11px; font-size:14px; outline:none; }
-        input:focus, select:focus { border-color:#d4af37; }
-        button { cursor:pointer; }
-        ::-webkit-scrollbar{width:6px;height:6px} ::-webkit-scrollbar-thumb{background:#29323f;border-radius:4px}
-        .spin { animation: spin 1s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        textarea { background:#161d29; border:1px solid #29323f; color:#e9ecf1; border-radius:8px; padding:10px 12px; font-size:13px; outline:none; }
-        textarea:focus { border-color:#d4af37; }
-        table { width:100%; border-collapse:collapse; }
-        th { text-align:left; font-size:11px; color:#8a93a3; font-weight:600; padding:8px 8px; border-bottom:1px solid #29323f; }
-        td { font-size:13px; padding:9px 8px; border-bottom:1px solid #20283480; }
-        @media print {
-          body * { visibility: hidden !important; }
-          .ticket-print, .ticket-print * { visibility: visible !important; }
-          .ticket-print { position: absolute; left: 0; top: 0; width: 80mm; margin: 0; padding: 4mm; color: #000; background: #fff; }
-          .no-print { display: none !important; }
-          @page { size: 80mm auto; margin: 0; }
-        }
-      `}</style>
-
+    <div style={{ "--accent": accent, "--accent-soft": accent + "22", minHeight: "100vh", background: "#0c1118", color: "#e9ecf1", fontFamily: "'Inter', system-ui, sans-serif" }}>
       {/* Header */}
       <div style={{ padding: "20px 20px 0", maxWidth: 1040, margin: "0 auto" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
-          <div>
-            <div className="sg" style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.5, display: "flex", alignItems: "center", gap: 8 }}>
-              <Boxes size={22} color="#d4af37" /> Refaccionaria de Motos
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {org.logo
+              ? <img src={org.logo} alt={org.name} style={{ width: 44, height: 44, borderRadius: 10, objectFit: "cover", border: "1px solid #29323f" }} />
+              : <div style={{ width: 44, height: 44, borderRadius: 10, background: "var(--accent-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}><Boxes size={24} color="var(--accent)" /></div>}
+            <div>
+              <div className="sg" style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.5 }}>{org.name}</div>
+              <div style={{ fontSize: 13, color: "#8a93a3", marginTop: 2 }}>Inventario y contabilidad en un solo lugar</div>
             </div>
-            <div style={{ fontSize: 13, color: "#8a93a3", marginTop: 2 }}>Inventario y contabilidad en un solo lugar</div>
           </div>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <MiniStat label="Valor inventario" value={fmt0(inventoryValue)} color="#3fa9f5" />
             <MiniStat label="Utilidad del mes" value={fmt0(monthNet)} color={monthNet >= 0 ? "#2ecc71" : "#e25c5c"} />
             {lowStock.length > 0 && <MiniStat label="Bajo mínimo" value={`${lowStock.length} pza`} color="#e8a13a" />}
+            <button onClick={onExit} style={{ ...btnGhost, padding: "8px 12px" }} title="Volver al panel de administrador">
+              <LogOut size={15} /> Panel
+            </button>
           </div>
         </div>
 
@@ -139,7 +371,7 @@ export default function RefaccionariaApp() {
             <button key={t.id} onClick={() => setTab(t.id)}
               style={{
                 background: "none", border: "none", padding: "10px 14px", display: "flex", alignItems: "center", gap: 6,
-                color: tab === t.id ? "#d4af37" : "#8a93a3", borderBottom: tab === t.id ? "2px solid #d4af37" : "2px solid transparent",
+                color: tab === t.id ? "var(--accent)" : "#8a93a3", borderBottom: tab === t.id ? "2px solid var(--accent)" : "2px solid transparent",
                 fontSize: 13, fontWeight: 600, marginBottom: -1
               }}>
               <t.icon size={15} /> {t.label}
@@ -174,16 +406,16 @@ export default function RefaccionariaApp() {
       </div>
 
       {ticketSale && (
-        <TicketModal sale={ticketSale} shop={shop} setShop={setShop} onClose={() => setTicketSale(null)} />
+        <TicketModal sale={ticketSale} shop={shop} setShop={setShop} logo={org.logo} onClose={() => setTicketSale(null)} />
       )}
 
       {toast && (
         <div className="no-print" style={{
           position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)",
-          background: "#1c2433", border: "1px solid #d4af37", color: "#e9ecf1", padding: "10px 18px",
+          background: "#1c2433", border: "1px solid var(--accent)", color: "#e9ecf1", padding: "10px 18px",
           borderRadius: 10, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 8, zIndex: 50
         }}>
-          <Check size={14} color="#d4af37" /> {toast}
+          <Check size={14} color="var(--accent)" /> {toast}
         </div>
       )}
     </div>
@@ -231,7 +463,7 @@ function Card({ children, style }) {
 function SectionTitle({ children, icon: Icon }) {
   return (
     <div className="sg" style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
-      {Icon && <Icon size={16} color="#d4af37" />} {children}
+      {Icon && <Icon size={16} color="var(--accent)" />} {children}
     </div>
   );
 }
@@ -273,7 +505,7 @@ function Tablero({ inventoryValue, inventoryRetail, lowStock, monthRevenue, mont
         <StatCard label="Valor de inventario (costo)" value={fmt0(inventoryValue)} color="#3fa9f5" icon={Boxes}
           sub={`Si se vende todo: +${fmt0(potentialMargin)} de utilidad`} />
         <StatCard label="Ventas del mes" value={fmt0(monthRevenue)} color="#2ecc71" icon={TrendingUp} />
-        <StatCard label="Utilidad bruta del mes" value={fmt0(monthGross)} color="#d4af37" icon={DollarSign} />
+        <StatCard label="Utilidad bruta del mes" value={fmt0(monthGross)} color="var(--accent)" icon={DollarSign} />
         <StatCard label="Utilidad neta del mes" value={fmt0(monthNet)} color={monthNet >= 0 ? "#2ecc71" : "#e25c5c"} icon={Wallet}
           sub="Después de gastos del local" />
       </div>
@@ -639,7 +871,7 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontWeight: 600, fontSize: 13 }}>{fmt(p.price)}</span>
-              <Plus size={16} color="#d4af37" />
+              <Plus size={16} color="var(--accent)" />
             </div>
           </div>
         ))}
@@ -800,7 +1032,7 @@ function Contabilidad({ sales, expenses }) {
         {[["mes", "Este mes"], ["todo", "Histórico"]].map(([id, label]) => (
           <button key={id} onClick={() => setPeriod(id)} style={{
             padding: "8px 16px", borderRadius: 8, border: "1px solid #29323f",
-            background: period === id ? "#d4af3722" : "transparent", color: period === id ? "#d4af37" : "#8a93a3",
+            background: period === id ? "var(--accent-soft)" : "transparent", color: period === id ? "var(--accent)" : "#8a93a3",
             fontWeight: 700, fontSize: 13
           }}>{label}</button>
         ))}
@@ -811,7 +1043,7 @@ function Contabilidad({ sales, expenses }) {
         <Row label="Ventas (ingresos)" value={fmt(revenue)} big />
         <Row label="− Costo de mercancía vendida" value={fmt(cogs)} muted />
         <div style={{ borderTop: "1px solid #29323f", margin: "6px 0" }} />
-        <Row label="= Utilidad bruta" value={fmt(gross)} color="#d4af37" />
+        <Row label="= Utilidad bruta" value={fmt(gross)} color="var(--accent)" />
         <Row label={`Margen bruto`} value={`${margin}%`} muted />
         <Row label="− Gastos del negocio" value={fmt(opex)} muted />
         <div style={{ borderTop: "1px solid #29323f", margin: "6px 0" }} />
@@ -835,7 +1067,7 @@ function Contabilidad({ sales, expenses }) {
               <Tooltip contentStyle={{ background: "#1c2433", border: "1px solid #29323f", borderRadius: 8 }} formatter={(v) => fmt0(v)} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Line type="monotone" dataKey="ingresos" name="Ingresos" stroke="#2ecc71" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="utilidad" name="Utilidad neta" stroke="#d4af37" strokeWidth={2.5} dot={false} />
+              <Line type="monotone" dataKey="utilidad" name="Utilidad neta" stroke="var(--accent)" strokeWidth={2.5} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </Card>
@@ -996,7 +1228,7 @@ function Asistente({ parts, setParts, showToast }) {
           rows={4}
           style={{ width: "100%", resize: "vertical", fontFamily: "inherit", marginBottom: 10 }}
         />
-        <button onClick={ask} disabled={loading || !text.trim()} style={{ ...btnGold, background: loading ? "#29323f" : "#d4af37", color: loading ? "#8a93a3" : "#0c1118" }}>
+        <button onClick={ask} disabled={loading || !text.trim()} style={{ ...btnGold, background: loading ? "#29323f" : "var(--accent)", color: loading ? "#8a93a3" : "#0c1118" }}>
           {loading ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />}
           {loading ? "Pensando…" : "Pedir a la IA"}
         </button>
@@ -1004,7 +1236,7 @@ function Asistente({ parts, setParts, showToast }) {
       </Card>
 
       {preview && (
-        <Card style={{ marginBottom: 18, border: "1px solid #d4af37" }}>
+        <Card style={{ marginBottom: 18, border: "1px solid var(--accent)" }}>
           <SectionTitle icon={Check}>Cambios propuestos — revisa y confirma</SectionTitle>
           <div style={{ fontSize: 12, color: "#8a93a3", marginBottom: 12 }}>Destilda lo que no quieras aplicar, o ajusta los valores.</div>
           {preview.map(it => (
@@ -1083,7 +1315,7 @@ function Asistente({ parts, setParts, showToast }) {
 function OpBadge({ op }) {
   const map = {
     create: { label: "Nueva", color: "#2ecc71" },
-    update: { label: "Modificar", color: "#d4af37" },
+    update: { label: "Modificar", color: "var(--accent)" },
     restock: { label: "Reabastecer", color: "#3fa9f5" },
     delete: { label: "Eliminar", color: "#e25c5c" },
   };
@@ -1094,7 +1326,7 @@ function OpBadge({ op }) {
 }
 
 /* ---------- Ticket imprimible ---------- */
-function TicketModal({ sale, shop, setShop, onClose }) {
+function TicketModal({ sale, shop, setShop, logo, onClose }) {
   const [editing, setEditing] = useState(false);
   const units = sale.items.reduce((a, i) => a + i.qty, 0);
   const upd = (field, val) => setShop(prev => ({ ...prev, [field]: val }));
@@ -1126,6 +1358,7 @@ function TicketModal({ sale, shop, setShop, onClose }) {
         {/* Ticket imprimible */}
         <div className="ticket-print" style={{ background: "#fff", color: "#000", borderRadius: 8, padding: 18, fontFamily: "'Courier New', monospace", fontSize: 12, lineHeight: 1.5 }}>
           <div style={{ textAlign: "center", marginBottom: 8 }}>
+            {logo && <img src={logo} alt="" style={{ maxWidth: 120, maxHeight: 60, objectFit: "contain", marginBottom: 4 }} />}
             <div style={{ fontWeight: 700, fontSize: 15, textTransform: "uppercase" }}>{shop.name || "Refaccionaria"}</div>
             {shop.address && <div>{shop.address}</div>}
             {shop.phone && <div>Tel. {shop.phone}</div>}
@@ -1169,7 +1402,7 @@ function TicketModal({ sale, shop, setShop, onClose }) {
 const tkTh = { fontSize: 11, padding: "3px 2px", textAlign: "center", color: "#000", fontWeight: 700, borderBottom: "1px dashed #000" };
 const tkTd = { fontSize: 12, padding: "3px 2px", textAlign: "center", color: "#000", verticalAlign: "top", borderBottom: "none" };
 const lbl = { fontSize: 11, color: "#8a93a3", display: "block", marginBottom: 4 };
-const btnGold = { background: "#d4af37", color: "#0c1118", border: "none", borderRadius: 8, padding: "10px 16px", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6 };
+const btnGold = { background: "var(--accent)", color: "#0c1118", border: "none", borderRadius: 8, padding: "10px 16px", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6 };
 const btnGhost = { background: "transparent", border: "1px solid #29323f", color: "#8a93a3", borderRadius: 8, padding: "10px 16px", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6 };
 const btnDanger = { background: "#e25c5c22", border: "1px solid #e25c5c", color: "#e25c5c", borderRadius: 8, padding: "10px 16px", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6 };
 const iconBtn = { background: "none", border: "none", color: "#5a6372", padding: 4, marginLeft: 2 };

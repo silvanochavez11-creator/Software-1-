@@ -36,10 +36,26 @@ Cuando registras una venta en el Punto de venta:
 | **Contabilidad** | Estado de resultados (ventas − costo de mercancía = utilidad bruta − gastos = utilidad neta), margen, ticket promedio y gráficas por mes. |
 | **Asistente IA** | Pega una factura/pedido del proveedor en texto y la IA lo convierte en refacciones para dar de alta o reabastecer. Si la pieza ya existe, suma el stock. |
 
+## Multi-refaccionaria (panel de administrador)
+
+La app arranca en un **panel de administrador** donde puedes crear varias refaccionarias,
+cada una con su **nombre, logo y color de marca**. Al entrar a una, toda la interfaz se
+tiñe con su color, muestra su logo en el header y en el ticket, y opera sobre **sus propios
+datos** (inventario, ventas y gastos separados por negocio). Con el botón **Panel** regresas
+al administrador para cambiar de negocio.
+
+> Este es el **prototipo** del modelo multi-inquilino: por ahora todo vive en el navegador
+> (`window.storage`), sin login real. El siguiente paso es conectar un backend (Supabase)
+> para volverlas cuentas de verdad con autenticación y aislamiento por servidor.
+
 ## Datos
 
-Todo se guarda localmente con `window.storage` bajo las llaves `refa:parts`, `refa:sales`,
-`refa:expenses`. No requiere backend.
+Todo se guarda localmente con `window.storage`:
+- `refa:orgs` — lista de refaccionarias (nombre, logo, color).
+- `refa:org:<id>:parts` / `:sales` / `:expenses` / `:shop` — datos de cada negocio.
+
+No requiere backend. Al abrir por primera vez, si existían datos de la versión anterior
+(de un solo negocio) se migran automáticamente a la primera refaccionaria.
 
 ## Notas
 
@@ -49,7 +65,8 @@ Todo se guarda localmente con `window.storage` bajo las llaves `refa:parts`, `re
 
 ## Próximos pasos posibles
 
-- Folio/ticket imprimible por venta.
+- **Backend real (Supabase):** login, base de datos y aislamiento por servidor para que
+  las refaccionarias sean cuentas de verdad accesibles desde cualquier dispositivo.
 - Clientes y fiados (cuentas por cobrar).
 - Margen objetivo por categoría y sugerencia de precio.
 - Reporte mensual exportable para el contador.
