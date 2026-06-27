@@ -857,6 +857,13 @@ function Contabilidad({ sales, expenses }) {
 }
 
 /* ---------- Asistente IA (alta masiva de inventario desde texto) ---------- */
+const NUMERIC_FIELDS = ["stock", "minStock", "cost", "price"];
+const FIELD_LABEL = { name: "nombre", brand: "marca", category: "categoría", compat: "compatibilidad", stock: "stock", minStock: "mínimo", cost: "costo", price: "precio" };
+const MONEY_FIELDS = new Set(["cost", "price"]);
+const sanitizeField = (field, val) =>
+  NUMERIC_FIELDS.includes(field) ? Math.max(0, (field === "stock" || field === "minStock" ? parseInt(val) : parseFloat(val)) || 0) : String(val ?? "");
+const showVal = (field, v) => MONEY_FIELDS.has(field) ? fmt(v) : String(v);
+
 function Asistente({ parts, setParts, showToast }) {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
@@ -866,123 +873,193 @@ function Asistente({ parts, setParts, showToast }) {
   const ask = async () => {
     if (!text.trim()) return;
     setLoading(true); setError(null); setPreview(null);
+    // Snapshot del inventario con un 'ref' para que la IA pueda apuntar a piezas existentes
+    const refList = parts.map((p, i) => ({
+      ref: i, name: p.name, brand: p.brand || "", compat: p.compat || "",
+      category: p.category, stock: Number(p.stock) || 0, cost: Number(p.cost) || 0, price: Number(p.price) || 0,
+    }));
     try {
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
-          max_tokens: 1500,
-          system: "Eres asistente de una refaccionaria de motos. Extraes refacciones de un texto en español (por ejemplo, una factura o pedido de proveedor) para dar de alta o reabastecer inventario. Responde SOLO con un arreglo JSON, sin texto adicional, sin markdown, sin backticks. Cada elemento: {\"name\":string,\"brand\":string,\"category\":string,\"compat\":string,\"stock\":number,\"cost\":number,\"price\":number}. 'name' es el nombre de la pieza (ej. 'Balatas delanteras', 'Bujía NGK', 'Kit de arrastre'). 'category' debe ser una de: Motor, Frenos, Suspensión, Eléctrico, Transmisión, Llantas y cámaras, Aceites y lubricantes, Carrocería, Accesorios, Otro. 'compat' es el modelo de moto compatible si se menciona (ej. 'FT150', 'DM200'), si no, cadena vacía. 'stock' es la cantidad recibida. 'cost' es el costo unitario de compra. Si dan precio de venta úsalo en 'price'; si no, estima 'price' como el costo con ~40% de margen. Si falta el costo de una pieza, no la inventes.",
-          messages: [{ role: "user", content: text }],
+          max_tokens: 2000,
+          system: "Eres asistente del inventario de una refaccionaria de motos. Recibes (1) el INVENTARIO ACTUAL como arreglo JSON (cada pieza tiene 'ref' numérico, name, brand, compat, category, stock, cost, price) y (2) una INSTRUCCIÓN del usuario en español. Devuelve SOLO un arreglo JSON de operaciones, sin texto, sin markdown, sin backticks. Tipos de operación:\n- Crear pieza nueva: {\"op\":\"create\",\"name\":string,\"brand\":string,\"category\":string,\"compat\":string,\"stock\":number,\"cost\":number,\"price\":number}\n- Modificar una pieza existente: {\"op\":\"update\",\"ref\":number,\"set\":{campo:valor,...}} donde campo ∈ name,brand,category,compat,stock,minStock,cost,price. Incluye en 'set' SOLO los campos que cambian, con su valor FINAL ya calculado.\n- Reabastecer (sumar al stock): {\"op\":\"restock\",\"ref\":number,\"add\":number,\"cost\":number(opcional),\"price\":number(opcional)}\n- Eliminar pieza: {\"op\":\"delete\",\"ref\":number}\nReglas: 'category' debe ser una de: Motor, Frenos, Suspensión, Eléctrico, Transmisión, Llantas y cámaras, Aceites y lubricantes, Carrocería, Accesorios, Otro. Si el usuario pide algo relativo (ej. 'sube 10% el precio', 'baja 20 pesos', 'duplica el stock') CALCULA tú el número final usando el valor actual del inventario. Una instrucción puede afectar a varias piezas (ej. 'sube 10% todos los aceites' => varias operaciones update). Si llega mercancía de una pieza que YA existe, usa 'restock'; si es pieza nueva, 'create'; si solo cambian datos de una pieza existente, 'update'. Para identificar la pieza usa name/brand/compat del inventario. Si no estás seguro de a qué pieza se refiere, omítela en lugar de adivinar.",
+          messages: [{ role: "user", content: `INVENTARIO ACTUAL:\n${JSON.stringify(refList)}\n\nINSTRUCCIÓN:\n${text}` }],
         }),
       });
       const data = await response.json();
       const raw = (data.content || []).map(b => b.text || "").join("\n");
       const clean = raw.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
-      if (!Array.isArray(parsed) || parsed.length === 0) {
-        setError("No encontré refacciones claras. Intenta detallar nombre, cantidad y costo.");
-      } else {
-        setPreview(parsed.map(p => ({
-          id: uid(), include: true,
-          name: p.name || "Refacción",
-          brand: p.brand || "",
-          category: PART_CATS.includes(p.category) ? p.category : "Otro",
-          compat: p.compat || "",
-          stock: Math.max(0, parseInt(p.stock) || 0),
-          cost: Math.max(0, Number(p.cost) || 0),
-          price: Math.max(0, Number(p.price) || 0),
-        })));
+      const ops = JSON.parse(clean);
+      if (!Array.isArray(ops) || ops.length === 0) {
+        setError("No entendí ninguna acción clara. Sé más específico (qué pieza y qué cambio).");
+        return;
       }
+      const built = ops.map(o => {
+        const base = { id: uid(), include: true, op: o.op };
+        if (o.op === "create") {
+          return {
+            ...base, op: "create", target: null,
+            fields: {
+              name: (o.name || "Refacción").toString(),
+              brand: (o.brand || "").toString(),
+              category: PART_CATS.includes(o.category) ? o.category : "Otro",
+              compat: (o.compat || "").toString(),
+              stock: sanitizeField("stock", o.stock),
+              cost: sanitizeField("cost", o.cost),
+              price: sanitizeField("price", o.price),
+            },
+          };
+        }
+        const part = parts[o.ref];
+        if (!part) return null;
+        if (o.op === "delete") return { ...base, target: part, before: part };
+        if (o.op === "restock") {
+          const extra = {};
+          if (o.cost != null) extra.cost = sanitizeField("cost", o.cost);
+          if (o.price != null) extra.price = sanitizeField("price", o.price);
+          return { ...base, target: part, before: part, add: Math.max(0, parseInt(o.add) || 0), extra };
+        }
+        if (o.op === "update") {
+          const set = {};
+          for (const [k, v] of Object.entries(o.set || {})) {
+            if (!(k in FIELD_LABEL)) continue;
+            if (k === "category" && !PART_CATS.includes(v)) continue;
+            set[k] = sanitizeField(k, v);
+          }
+          if (Object.keys(set).length === 0) return null;
+          return { ...base, target: part, before: part, set };
+        }
+        return null;
+      }).filter(Boolean);
+      if (built.length === 0) {
+        setError("No pude relacionar la instrucción con tu inventario. Revisa el nombre de la pieza.");
+        return;
+      }
+      setPreview(built);
     } catch (e) {
-      setError("No pude procesar eso. Intenta de nuevo o sé más específico con cantidades y costos.");
+      setError("No pude procesar eso. Intenta de nuevo o sé más específico.");
     } finally {
       setLoading(false);
     }
   };
 
-  const upd = (id, field, val) => setPreview(prev => prev.map(p => p.id === id ? { ...p, [field]: val } : p));
   const toggle = (id) => setPreview(prev => prev.map(p => p.id === id ? { ...p, include: !p.include } : p));
+  const updField = (id, field, val) => setPreview(prev => prev.map(p => p.id === id ? { ...p, fields: { ...p.fields, [field]: sanitizeField(field, val) } } : p));
+  const updSet = (id, field, val) => setPreview(prev => prev.map(p => p.id === id ? { ...p, set: { ...p.set, [field]: sanitizeField(field, val) } } : p));
+  const updAdd = (id, val) => setPreview(prev => prev.map(p => p.id === id ? { ...p, add: Math.max(0, parseInt(val) || 0) } : p));
 
   const confirm = () => {
-    const toAdd = preview.filter(p => p.include && p.name);
-    let merged = 0, created = 0;
+    const items = preview.filter(p => p.include);
+    let created = 0, updated = 0, restocked = 0, deleted = 0;
     setParts(prev => {
-      const next = [...prev];
-      for (const it of toAdd) {
-        const match = next.findIndex(p =>
-          (it.compat && p.compat && p.name.toLowerCase() === it.name.toLowerCase() && p.compat.toLowerCase() === it.compat.toLowerCase()) ||
-          (!it.compat && p.name.toLowerCase() === it.name.toLowerCase() && (p.brand || "").toLowerCase() === (it.brand || "").toLowerCase())
-        );
-        if (match >= 0) {
-          next[match] = {
-            ...next[match],
-            stock: (Number(next[match].stock) || 0) + it.stock,
-            cost: it.cost || next[match].cost,
-            price: it.price || next[match].price,
-          };
-          merged++;
-        } else {
-          next.unshift({ id: uid(), sku: "", minStock: 0, ...it });
-          created++;
-        }
+      let next = [...prev];
+      for (const it of items) {
+        if (it.op === "create") { next.unshift({ id: uid(), sku: "", minStock: 0, ...it.fields }); created++; }
+        else if (it.op === "delete") { next = next.filter(p => p.id !== it.target.id); deleted++; }
+        else if (it.op === "restock") { next = next.map(p => p.id === it.target.id ? { ...p, stock: (Number(p.stock) || 0) + (Number(it.add) || 0), ...it.extra } : p); restocked++; }
+        else if (it.op === "update") { next = next.map(p => p.id === it.target.id ? { ...p, ...it.set } : p); updated++; }
       }
       return next;
     });
     setPreview(null); setText("");
-    showToast(`${created} nuevas, ${merged} reabastecidas`);
+    const parts2 = [];
+    if (created) parts2.push(`${created} nueva${created > 1 ? "s" : ""}`);
+    if (updated) parts2.push(`${updated} modificada${updated > 1 ? "s" : ""}`);
+    if (restocked) parts2.push(`${restocked} reabastecida${restocked > 1 ? "s" : ""}`);
+    if (deleted) parts2.push(`${deleted} eliminada${deleted > 1 ? "s" : ""}`);
+    showToast(parts2.join(" · ") || "Sin cambios");
   };
 
   return (
     <div>
       <Card style={{ marginBottom: 18 }}>
-        <SectionTitle icon={Sparkles}>Alta rápida de inventario desde texto</SectionTitle>
+        <SectionTitle icon={Sparkles}>Asistente de inventario</SectionTitle>
         <div style={{ fontSize: 12, color: "#8a93a3", marginBottom: 12 }}>
-          Pega o describe un pedido/factura del proveedor. La IA lo convierte en refacciones listas para revisar y agregar al inventario. Si una pieza ya existe, suma el stock.
+          La IA ya conoce tu inventario actual ({parts.length} piezas). Pídele en español lo que necesites: dar de alta, reabastecer, cambiar precios/stock o eliminar. Siempre muestra una vista previa antes de aplicar.
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+          {[
+            "Llegaron 10 balatas FT150 a $80, las vendo en $130",
+            "Sube 10% el precio de todos los aceites",
+            "Cambia el stock de bujías NGK a 8",
+            "Elimina los kits de arrastre DM200",
+          ].map(ex => (
+            <button key={ex} onClick={() => setText(ex)} style={{ ...chip }}>{ex}</button>
+          ))}
         </div>
         <textarea
           value={text} onChange={e => setText(e.target.value)}
-          placeholder="Ej: Llegó pedido: 10 balatas delanteras Italika FT150 a $80 c/u, las vendo en $130. 5 bujías NGK a $45, precio $75. 3 litros de aceite 20w50 a $90. 2 kits de arrastre DM200 a $350."
-          rows={5}
+          placeholder="Ej: Sube 15 pesos a todas las balatas y baja el precio del aceite 20w50 a $85. También llegaron 5 bujías NGK a $45."
+          rows={4}
           style={{ width: "100%", resize: "vertical", fontFamily: "inherit", marginBottom: 10 }}
         />
         <button onClick={ask} disabled={loading || !text.trim()} style={{ ...btnGold, background: loading ? "#29323f" : "#d4af37", color: loading ? "#8a93a3" : "#0c1118" }}>
           {loading ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />}
-          {loading ? "Analizando…" : "Procesar con IA"}
+          {loading ? "Pensando…" : "Pedir a la IA"}
         </button>
         {error && <div style={{ color: "#e25c5c", fontSize: 12, marginTop: 10 }}>{error}</div>}
       </Card>
 
       {preview && (
         <Card style={{ marginBottom: 18, border: "1px solid #d4af37" }}>
-          <SectionTitle icon={Check}>Esto entendí — revisa y ajusta</SectionTitle>
-          <div style={{ fontSize: 12, color: "#8a93a3", marginBottom: 12 }}>Destilda lo que no quieras, o corrige cantidades y precios.</div>
-          <div style={{ overflowX: "auto" }}>
-            <table>
-              <thead>
-                <tr><th></th><th>Refacción</th><th>Categoría</th><th>Moto</th><th style={{ textAlign: "right" }}>Cant.</th><th style={{ textAlign: "right" }}>Costo</th><th style={{ textAlign: "right" }}>Precio</th></tr>
-              </thead>
-              <tbody>
-                {preview.map(p => (
-                  <tr key={p.id} style={{ opacity: p.include ? 1 : 0.4 }}>
-                    <td><input type="checkbox" checked={p.include} onChange={() => toggle(p.id)} style={{ width: 16, height: 16 }} /></td>
-                    <td>
-                      <input value={p.name} onChange={e => upd(p.id, "name", e.target.value)} style={{ width: 150, padding: "5px 7px" }} />
-                      {p.brand && <div style={{ fontSize: 10, color: "#5a6372", marginTop: 2 }}>{p.brand}</div>}
-                    </td>
-                    <td style={{ color: "#8a93a3", fontSize: 12 }}>{p.category}</td>
-                    <td><input value={p.compat} onChange={e => upd(p.id, "compat", e.target.value)} style={{ width: 70, padding: "5px 7px" }} /></td>
-                    <td style={{ textAlign: "right" }}><input type="number" value={p.stock} onChange={e => upd(p.id, "stock", Math.max(0, parseInt(e.target.value) || 0))} style={{ width: 58, padding: "5px 7px" }} /></td>
-                    <td style={{ textAlign: "right" }}><input type="number" value={p.cost} onChange={e => upd(p.id, "cost", Math.max(0, parseFloat(e.target.value) || 0))} style={{ width: 70, padding: "5px 7px" }} /></td>
-                    <td style={{ textAlign: "right" }}><input type="number" value={p.price} onChange={e => upd(p.id, "price", Math.max(0, parseFloat(e.target.value) || 0))} style={{ width: 70, padding: "5px 7px" }} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <SectionTitle icon={Check}>Cambios propuestos — revisa y confirma</SectionTitle>
+          <div style={{ fontSize: 12, color: "#8a93a3", marginBottom: 12 }}>Destilda lo que no quieras aplicar, o ajusta los valores.</div>
+          {preview.map(it => (
+            <div key={it.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 0", borderBottom: "1px solid #20283480", opacity: it.include ? 1 : 0.45 }}>
+              <input type="checkbox" checked={it.include} onChange={() => toggle(it.id)} style={{ width: 16, height: 16, marginTop: 3 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <OpBadge op={it.op} />
+                {it.op === "create" && (
+                  <div style={{ marginTop: 6 }}>
+                    <input value={it.fields.name} onChange={e => updField(it.id, "name", e.target.value)} style={{ width: 180, padding: "5px 7px", marginRight: 6 }} />
+                    <input value={it.fields.compat} placeholder="moto" onChange={e => updField(it.id, "compat", e.target.value)} style={{ width: 80, padding: "5px 7px", marginRight: 6 }} />
+                    <span style={miniLbl}>cant.</span><input type="number" value={it.fields.stock} onChange={e => updField(it.id, "stock", e.target.value)} style={miniNum} />
+                    <span style={miniLbl}>costo</span><input type="number" value={it.fields.cost} onChange={e => updField(it.id, "cost", e.target.value)} style={miniNum} />
+                    <span style={miniLbl}>precio</span><input type="number" value={it.fields.price} onChange={e => updField(it.id, "price", e.target.value)} style={miniNum} />
+                  </div>
+                )}
+                {it.op === "update" && (
+                  <div style={{ marginTop: 4 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{it.before.name}{it.before.compat ? ` · ${it.before.compat}` : ""}</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 4 }}>
+                      {Object.entries(it.set).map(([f, v]) => (
+                        <div key={f} style={{ fontSize: 12, color: "#8a93a3", display: "flex", alignItems: "center", gap: 4 }}>
+                          <span>{FIELD_LABEL[f]}:</span>
+                          <span style={{ textDecoration: "line-through", color: "#5a6372" }}>{showVal(f, it.before[f])}</span>
+                          <span style={{ color: "#5a6372" }}>→</span>
+                          {NUMERIC_FIELDS.includes(f)
+                            ? <input type="number" value={v} onChange={e => updSet(it.id, f, e.target.value)} style={{ ...miniNum, width: 74 }} />
+                            : <input value={v} onChange={e => updSet(it.id, f, e.target.value)} style={{ width: 110, padding: "4px 6px" }} />}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {it.op === "restock" && (
+                  <div style={{ marginTop: 4 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{it.before.name}{it.before.compat ? ` · ${it.before.compat}` : ""}</div>
+                    <div style={{ fontSize: 12, color: "#8a93a3", marginTop: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                      stock {it.before.stock} <span style={{ color: "#5a6372" }}>+</span>
+                      <input type="number" value={it.add} onChange={e => updAdd(it.id, e.target.value)} style={{ ...miniNum, width: 64 }} />
+                      <span style={{ color: "#5a6372" }}>→</span> <span style={{ color: "#2ecc71", fontWeight: 600 }}>{(Number(it.before.stock) || 0) + (Number(it.add) || 0)}</span>
+                      {it.extra && it.extra.cost != null && <span>· costo → {fmt(it.extra.cost)}</span>}
+                      {it.extra && it.extra.price != null && <span>· precio → {fmt(it.extra.price)}</span>}
+                    </div>
+                  </div>
+                )}
+                {it.op === "delete" && (
+                  <div style={{ fontSize: 13, fontWeight: 600, marginTop: 4, color: "#e25c5c" }}>
+                    {it.before.name}{it.before.compat ? ` · ${it.before.compat}` : ""} <span style={{ color: "#8a93a3", fontWeight: 400 }}>({it.before.stock} u)</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
           <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-            <button onClick={confirm} style={{ ...btnGold, flex: 1, justifyContent: "center" }}><Check size={15} /> Agregar al inventario</button>
+            <button onClick={confirm} style={{ ...btnGold, flex: 1, justifyContent: "center" }}><Check size={15} /> Aplicar cambios</button>
             <button onClick={() => setPreview(null)} style={{ ...btnGhost, flex: 1, justifyContent: "center" }}><X size={15} /> Cancelar</button>
           </div>
         </Card>
@@ -1000,6 +1077,19 @@ function Asistente({ parts, setParts, showToast }) {
         {parts.length > 10 && <div style={{ fontSize: 12, color: "#5a6372", marginTop: 8 }}>…y {parts.length - 10} más. Mira todo en la pestaña Inventario.</div>}
       </Card>
     </div>
+  );
+}
+
+function OpBadge({ op }) {
+  const map = {
+    create: { label: "Nueva", color: "#2ecc71" },
+    update: { label: "Modificar", color: "#d4af37" },
+    restock: { label: "Reabastecer", color: "#3fa9f5" },
+    delete: { label: "Eliminar", color: "#e25c5c" },
+  };
+  const m = map[op] || map.update;
+  return (
+    <span style={{ display: "inline-block", fontSize: 10, fontWeight: 700, color: m.color, border: `1px solid ${m.color}`, borderRadius: 6, padding: "1px 7px", textTransform: "uppercase", letterSpacing: 0.4 }}>{m.label}</span>
   );
 }
 
@@ -1083,4 +1173,7 @@ const btnGold = { background: "#d4af37", color: "#0c1118", border: "none", borde
 const btnGhost = { background: "transparent", border: "1px solid #29323f", color: "#8a93a3", borderRadius: 8, padding: "10px 16px", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6 };
 const btnDanger = { background: "#e25c5c22", border: "1px solid #e25c5c", color: "#e25c5c", borderRadius: 8, padding: "10px 16px", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6 };
 const iconBtn = { background: "none", border: "none", color: "#5a6372", padding: 4, marginLeft: 2 };
+const chip = { background: "#1c2433", border: "1px solid #29323f", color: "#8a93a3", borderRadius: 16, padding: "5px 11px", fontSize: 11, fontWeight: 500 };
+const miniLbl = { fontSize: 10, color: "#5a6372", margin: "0 4px 0 8px" };
+const miniNum = { width: 60, padding: "5px 7px" };
 const stepBtn = { background: "#1c2433", border: "1px solid #29323f", color: "#e9ecf1", borderRadius: 6, width: 22, height: 22, fontSize: 14, lineHeight: 1, display: "inline-flex", alignItems: "center", justifyContent: "center" };
