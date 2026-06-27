@@ -36,26 +36,28 @@ Cuando registras una venta en el Punto de venta:
 | **Contabilidad** | Estado de resultados (ventas − costo de mercancía = utilidad bruta − gastos = utilidad neta), margen, ticket promedio y gráficas por mes. |
 | **Asistente IA** | Pega una factura/pedido del proveedor en texto y la IA lo convierte en refacciones para dar de alta o reabastecer. Si la pieza ya existe, suma el stock. |
 
-## Multi-refaccionaria (panel de administrador)
+## Multi-refaccionaria con Supabase (login + nube)
 
-La app arranca en un **panel de administrador** donde puedes crear varias refaccionarias,
-cada una con su **nombre, logo y color de marca**. Al entrar a una, toda la interfaz se
-tiñe con su color, muestra su logo en el header y en el ticket, y opera sobre **sus propios
-datos** (inventario, ventas y gastos separados por negocio). Con el botón **Panel** regresas
-al administrador para cambiar de negocio.
+La app arranca con una **pantalla de inicio de sesión** (Supabase Auth). Según quién entre:
 
-> Este es el **prototipo** del modelo multi-inquilino: por ahora todo vive en el navegador
-> (`window.storage`), sin login real. El siguiente paso es conectar un backend (Supabase)
-> para volverlas cuentas de verdad con autenticación y aislamiento por servidor.
+- **Administrador** (tú): ve el **panel de administrador** para crear refaccionarias
+  (nombre, logo, color), eliminarlas y **asignar las cuentas de los dueños** a su negocio.
+- **Dueño**: entra directo a SU refaccionaria. La interfaz se tiñe con su color, muestra su
+  logo, y solo ve **sus** datos (inventario, ventas y gastos).
+
+El aislamiento entre negocios lo garantiza la base de datos (Row Level Security por `org_id`),
+no el código. Todo vive en **Supabase**, así que es accesible desde cualquier dispositivo.
+
+> **Configuración:** sigue [`supabase/SETUP.md`](./supabase/SETUP.md) (correr el SQL,
+> desactivar confirmación de correo, hacerte admin). La URL del proyecto y la llave pública
+> ya están en el código (`SB_URL` / `SB_KEY`).
 
 ## Datos
 
-Todo se guarda localmente con `window.storage`:
-- `refa:orgs` — lista de refaccionarias (nombre, logo, color).
-- `refa:org:<id>:parts` / `:sales` / `:expenses` / `:shop` — datos de cada negocio.
-
-No requiere backend. Al abrir por primera vez, si existían datos de la versión anterior
-(de un solo negocio) se migran automáticamente a la primera refaccionaria.
+- **En la nube (Supabase):** `organizations`, `profiles`, `memberships`, `parts`, `sales`,
+  `expenses`. Ver `supabase/schema.sql`.
+- **Local (`window.storage`):** solo la sesión (`refa:session`) y la config cosmética del
+  ticket por negocio (`refa:org:<id>:shop`).
 
 ## Notas
 

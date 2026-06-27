@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   BarChart, Bar, Legend
@@ -7,7 +7,7 @@ import Papa from "papaparse";
 import {
   Plus, Upload, TrendingUp, Wallet, Package, Trash2, Sparkles, Check, X, Loader2,
   AlertTriangle, ShoppingCart, Search, Pencil, Boxes, DollarSign, Receipt, BarChart3, Printer,
-  LogOut, Store, ImagePlus, Shield, ArrowRight
+  LogOut, Store, ImagePlus, Shield, ArrowRight, LogIn, UserPlus, Users, Mail, Lock
 } from "lucide-react";
 
 const fmt = (n) =>
@@ -44,6 +44,113 @@ function fileToLogo(file, cb) {
   reader.readAsDataURL(file);
 }
 
+/* ============================================================================
+   Conexión a Supabase (sin dependencias: usa fetch a la API REST + Auth)
+   La llave 'publishable' es pública por diseño; la seguridad la dan las
+   políticas RLS instaladas en la base de datos.
+   ========================================================================== */
+const SB_URL = "https://npxjpkcyfgxfbdvvlcrx.supabase.co";
+const SB_KEY = "sb_publishable_kQ-u3skesem-ub6LQBBb5Q_q3WRyXX3";
+const SESSION_KEY = "refa:session";
+
+let _session = null; // { access_token, refresh_token, expires_at, user }
+
+function saveSession(d) {
+  if (!d || !d.access_token) return null;
+  _session = {
+    access_token: d.access_token,
+    refresh_token: d.refresh_token,
+    expires_at: Date.now() + ((d.expires_in || 3600) * 1000),
+    user: d.user,
+  };
+  try { window.storage.set(SESSION_KEY, JSON.stringify(_session)); } catch (e) {}
+  return _session;
+}
+
+async function sbAuth(path, body) {
+  const res = await fetch(`${SB_URL}/auth/v1/${path}`, {
+    method: "POST",
+    headers: { apikey: SB_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error_description || data.msg || data.message || "Error de autenticación");
+  return data;
+}
+
+async function signIn(email, password) {
+  return saveSession(await sbAuth("token?grant_type=password", { email, password }));
+}
+async function signUp(email, password) {
+  const d = await sbAuth("signup", { email, password });
+  if (d.access_token) saveSession(d);
+  return d; // si requiere confirmación de correo, no trae access_token
+}
+async function refreshSession() {
+  if (!_session?.refresh_token) throw new Error("sin sesión");
+  return saveSession(await sbAuth("token?grant_type=refresh_token", { refresh_token: _session.refresh_token }));
+}
+async function restoreSession() {
+  try { const r = await window.storage.get(SESSION_KEY); if (r && r.value) _session = JSON.parse(r.value); } catch (e) {}
+  if (_session && _session.expires_at < Date.now() + 60000) {
+    try { await refreshSession(); } catch (e) { _session = null; try { window.storage.set(SESSION_KEY, ""); } catch (er) {} }
+  }
+  return _session;
+}
+async function signOut() {
+  try { await fetch(`${SB_URL}/auth/v1/logout`, { method: "POST", headers: { apikey: SB_KEY, Authorization: `Bearer ${_session?.access_token}` } }); } catch (e) {}
+  _session = null;
+  try { window.storage.set(SESSION_KEY, ""); } catch (e) {}
+}
+
+async function sbFetch(path, opts = {}) {
+  if (_session && _session.expires_at < Date.now() + 60000 && _session.refresh_token) {
+    try { await refreshSession(); } catch (e) {}
+  }
+  const headers = { apikey: SB_KEY, "Content-Type": "application/json", ...(opts.headers || {}) };
+  if (_session?.access_token) headers.Authorization = `Bearer ${_session.access_token}`;
+  const res = await fetch(`${SB_URL}/rest/v1/${path}`, { ...opts, headers });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!res.ok) throw new Error((data && (data.message || data.hint)) || `Error ${res.status}`);
+  return data;
+}
+
+const db = {
+  select: (table, query = "") => sbFetch(`${table}?${query}`, { method: "GET" }),
+  insert: (table, rows) => sbFetch(table, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(Array.isArray(rows) ? rows : [rows]) }),
+  update: (table, id, patch) => sbFetch(`${table}?id=eq.${id}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(patch) }),
+  upsert: (table, rows) => sbFetch(`${table}?on_conflict=id`, { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(rows) }),
+  remove: (table, id) => sbFetch(`${table}?id=eq.${id}`, { method: "DELETE" }),
+};
+
+/* ---- Mapeo entre la forma de la app (camelCase) y las columnas de la BD ---- */
+const orgFromDb = (r) => ({ id: r.id, name: r.name, logo: r.logo_url || "", accent: r.accent || DEFAULT_ACCENT, createdAt: (r.created_at || "").slice(0, 10) });
+const orgToDb = (o) => ({ name: o.name, logo_url: o.logo || null, accent: o.accent || DEFAULT_ACCENT });
+
+const partFromDb = (r) => ({ id: r.id, sku: r.sku || "", name: r.name, brand: r.brand || "", category: r.category || "Otro", compat: r.compat || "", stock: Number(r.stock) || 0, minStock: Number(r.min_stock) || 0, cost: Number(r.cost) || 0, price: Number(r.price) || 0 });
+const partToDb = (p, org_id) => ({ id: p.id, org_id, sku: p.sku || null, name: p.name, brand: p.brand || null, category: p.category || null, compat: p.compat || null, stock: Number(p.stock) || 0, min_stock: Number(p.minStock) || 0, cost: Number(p.cost) || 0, price: Number(p.price) || 0 });
+
+const saleFromDb = (r) => ({ id: r.id, folio: r.folio, customer: r.customer || "", items: r.items || [], total: Number(r.total) || 0, cogs: Number(r.cogs) || 0, profit: Number(r.profit) || 0, date: r.sold_at, time: "" });
+const saleToDb = (s, org_id) => ({ id: s.id, org_id, folio: s.folio || null, customer: s.customer || null, items: s.items || [], total: Number(s.total) || 0, cogs: Number(s.cogs) || 0, profit: Number(s.profit) || 0, sold_at: s.date });
+
+const expenseFromDb = (r) => ({ id: r.id, category: r.category, amount: Number(r.amount) || 0, note: r.note || "", date: r.spent_at });
+const expenseToDb = (e, org_id) => ({ id: e.id, org_id, category: e.category, amount: Number(e.amount) || 0, note: e.note || null, spent_at: e.date });
+
+// Sincroniza un arreglo local con la tabla en Supabase: upsert de lo nuevo/cambiado, delete de lo quitado
+async function syncTable(table, appRows, snapMap, toDb) {
+  const curMap = new Map();
+  for (const r of appRows) curMap.set(r.id, toDb(r));
+  const toUpsert = [];
+  for (const [id, row] of curMap) { if (snapMap.get(id) !== JSON.stringify(row)) toUpsert.push(row); }
+  const toDelete = [];
+  for (const id of snapMap.keys()) { if (!curMap.has(id)) toDelete.push(id); }
+  if (toUpsert.length) await db.upsert(table, toUpsert);
+  for (const id of toDelete) await db.remove(table, id);
+  snapMap.clear();
+  for (const [id, row] of curMap) snapMap.set(id, JSON.stringify(row));
+}
+
 function GlobalStyles() {
   return (
     <style>{`
@@ -73,86 +180,258 @@ function GlobalStyles() {
 }
 
 export default function RefaccionariaSaaS() {
+  const [booting, setBooting] = useState(true);
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
   const [orgs, setOrgs] = useState([]);
   const [activeOrgId, setActiveOrgId] = useState(null);
-  const [screen, setScreen] = useState("admin");
-  const [loaded, setLoaded] = useState(false);
+  const [screen, setScreen] = useState("home");
+
+  const loadMe = async () => {
+    if (!_session?.user) return;
+    const uidNow = _session.user.id;
+    try {
+      const prof = (await db.select("profiles", `select=*&id=eq.${uidNow}`))?.[0] || { id: uidNow, email: _session.user.email, is_admin: false };
+      setProfile(prof);
+      if (prof.is_admin) {
+        const os = await db.select("organizations", "select=*&order=created_at.asc");
+        setOrgs((os || []).map(orgFromDb));
+      } else {
+        const mem = await db.select("memberships", `select=org_id&user_id=eq.${uidNow}`);
+        const ids = (mem || []).map(m => m.org_id);
+        if (ids.length) {
+          const os = await db.select("organizations", `select=*&id=in.(${ids.join(",")})`);
+          setOrgs((os || []).map(orgFromDb));
+        } else setOrgs([]);
+      }
+    } catch (e) { setProfile({ id: uidNow, email: _session.user.email, is_admin: false }); setOrgs([]); }
+  };
 
   useEffect(() => {
     (async () => {
-      let list = [];
-      try { const r = await window.storage.get("refa:orgs"); if (r && r.value) list = JSON.parse(r.value); } catch (e) {}
-      if (!Array.isArray(list) || list.length === 0) {
-        const id = uid();
-        list = [{ id, name: "Mi Refaccionaria", logo: "", accent: DEFAULT_ACCENT, createdAt: todayStr() }];
-        // Migra datos de la versión anterior (un solo negocio) hacia la primera organización
-        for (const k of ["parts", "sales", "expenses", "shop"]) {
-          try { const old = await window.storage.get("refa:" + k); if (old && old.value) await window.storage.set(`refa:org:${id}:${k}`, old.value); } catch (e) {}
-        }
-        try { await window.storage.set("refa:orgs", JSON.stringify(list)); } catch (e) {}
-      }
-      setOrgs(list);
-      setLoaded(true);
+      const s = await restoreSession();
+      setSession(s);
+      if (s) await loadMe();
+      setBooting(false);
     })();
   }, []);
 
-  useEffect(() => { if (loaded) window.storage.set("refa:orgs", JSON.stringify(orgs)).catch(() => {}); }, [orgs, loaded]);
+  const onAuthed = async () => { setSession(_session); await loadMe(); setScreen("home"); };
+  const doSignOut = async () => { await signOut(); setSession(null); setProfile(null); setOrgs([]); setActiveOrgId(null); setScreen("home"); };
 
+  if (booting) return <><GlobalStyles /><Splash /></>;
+  if (!session) return <><GlobalStyles /><AuthScreen onAuthed={onAuthed} /></>;
+
+  const isAdmin = !!profile?.is_admin;
   const activeOrg = orgs.find(o => o.id === activeOrgId);
-  const enter = (id) => { setActiveOrgId(id); setScreen("shop"); };
+
+  let body;
+  if (screen === "shop" && activeOrg) {
+    body = <ShopApp key={activeOrg.id} org={activeOrg} onExit={() => isAdmin ? setScreen("home") : doSignOut()} isAdmin={isAdmin} />;
+  } else if (isAdmin) {
+    body = <AdminPanel orgs={orgs} reload={loadMe} onEnter={(id) => { setActiveOrgId(id); setScreen("shop"); }} onSignOut={doSignOut} adminEmail={session.user?.email} />;
+  } else if (orgs.length === 0) {
+    body = <NoOrgScreen email={session.user?.email} onSignOut={doSignOut} onRetry={loadMe} />;
+  } else if (orgs.length === 1) {
+    body = <ShopApp key={orgs[0].id} org={orgs[0]} onExit={doSignOut} isAdmin={false} />;
+  } else {
+    body = <OrgChooser orgs={orgs} onPick={(id) => { setActiveOrgId(id); setScreen("shop"); }} onSignOut={doSignOut} />;
+  }
+  return <><GlobalStyles />{body}</>;
+}
+
+function ScreenShell({ children, accent = DEFAULT_ACCENT }) {
+  return (
+    <div style={{ "--accent": accent, "--accent-soft": accent + "22", minHeight: "100vh", background: "#0c1118", color: "#e9ecf1", fontFamily: "'Inter', system-ui, sans-serif", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      {children}
+    </div>
+  );
+}
+
+function Splash() {
+  return <ScreenShell><Loader2 size={28} className="spin" color="var(--accent)" /></ScreenShell>;
+}
+
+function AuthScreen({ onAuthed }) {
+  const [mode, setMode] = useState("login"); // login | register
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [info, setInfo] = useState(null);
+
+  const submit = async () => {
+    if (!email.trim() || !password) return setError("Escribe tu correo y contraseña.");
+    setBusy(true); setError(null); setInfo(null);
+    try {
+      if (mode === "login") {
+        await signIn(email.trim(), password);
+        await onAuthed();
+      } else {
+        const d = await signUp(email.trim(), password);
+        if (d.access_token) { await onAuthed(); }
+        else { setInfo("Cuenta creada. Si te pide confirmar tu correo, revísalo; si no, ya puedes iniciar sesión."); setMode("login"); }
+      }
+    } catch (e) { setError(e.message || "No se pudo completar."); }
+    finally { setBusy(false); }
+  };
 
   return (
-    <>
-      <GlobalStyles />
-      {screen === "shop" && activeOrg
-        ? <ShopApp key={activeOrg.id} org={activeOrg} onExit={() => setScreen("admin")} />
-        : <AdminPanel orgs={orgs} setOrgs={setOrgs} onEnter={enter} />}
-    </>
+    <ScreenShell>
+      <div style={{ width: 380, maxWidth: "100%" }}>
+        <div style={{ textAlign: "center", marginBottom: 22 }}>
+          <div style={{ width: 56, height: 56, borderRadius: 14, background: "var(--accent-soft)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 10 }}>
+            <Boxes size={30} color="var(--accent)" />
+          </div>
+          <div className="sg" style={{ fontSize: 22, fontWeight: 700 }}>Refaccionaria de Motos</div>
+          <div style={{ fontSize: 13, color: "#8a93a3", marginTop: 2 }}>{mode === "login" ? "Inicia sesión para continuar" : "Crea tu cuenta"}</div>
+        </div>
+        <Card>
+          <label style={lbl}>Correo</label>
+          <div style={{ position: "relative", marginBottom: 12 }}>
+            <Mail size={15} color="#5a6372" style={{ position: "absolute", left: 11, top: 11 }} />
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="tucorreo@ejemplo.com" style={{ width: "100%", paddingLeft: 34 }} />
+          </div>
+          <label style={lbl}>Contraseña</label>
+          <div style={{ position: "relative", marginBottom: 16 }}>
+            <Lock size={15} color="#5a6372" style={{ position: "absolute", left: 11, top: 11 }} />
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} placeholder="••••••••" style={{ width: "100%", paddingLeft: 34 }} />
+          </div>
+          {error && <div style={{ color: "#e25c5c", fontSize: 12, marginBottom: 10 }}>{error}</div>}
+          {info && <div style={{ color: "#2ecc71", fontSize: 12, marginBottom: 10 }}>{info}</div>}
+          <button onClick={submit} disabled={busy} style={{ ...btnGold, width: "100%", justifyContent: "center" }}>
+            {busy ? <Loader2 size={15} className="spin" /> : (mode === "login" ? <LogIn size={15} /> : <UserPlus size={15} />)}
+            {mode === "login" ? "Entrar" : "Crear cuenta"}
+          </button>
+          <div style={{ textAlign: "center", marginTop: 14, fontSize: 12, color: "#8a93a3" }}>
+            {mode === "login" ? "¿No tienes cuenta? " : "¿Ya tienes cuenta? "}
+            <button onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(null); setInfo(null); }}
+              style={{ background: "none", border: "none", color: "var(--accent)", fontWeight: 700, fontSize: 12 }}>
+              {mode === "login" ? "Regístrate" : "Inicia sesión"}
+            </button>
+          </div>
+        </Card>
+      </div>
+    </ScreenShell>
+  );
+}
+
+function NoOrgScreen({ email, onSignOut, onRetry }) {
+  return (
+    <ScreenShell>
+      <div style={{ width: 420, maxWidth: "100%", textAlign: "center" }}>
+        <div style={{ width: 56, height: 56, borderRadius: 14, background: "var(--accent-soft)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 12 }}>
+          <Store size={28} color="var(--accent)" />
+        </div>
+        <div className="sg" style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Tu cuenta aún no tiene refaccionaria</div>
+        <div style={{ fontSize: 13, color: "#8a93a3", marginBottom: 20, lineHeight: 1.6 }}>
+          Ya iniciaste sesión como <b style={{ color: "#e9ecf1" }}>{email}</b>, pero el administrador todavía no te ha asignado a un negocio. Pídele que te asigne y luego actualiza.
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+          <button onClick={onRetry} style={btnGold}><ArrowRight size={15} /> Ya me asignó, actualizar</button>
+          <button onClick={onSignOut} style={btnGhost}><LogOut size={15} /> Salir</button>
+        </div>
+      </div>
+    </ScreenShell>
+  );
+}
+
+function OrgChooser({ orgs, onPick, onSignOut }) {
+  return (
+    <ScreenShell>
+      <div style={{ width: 460, maxWidth: "100%" }}>
+        <div className="sg" style={{ fontSize: 20, fontWeight: 700, marginBottom: 12, textAlign: "center" }}>Elige una refaccionaria</div>
+        <div style={{ display: "grid", gap: 10 }}>
+          {orgs.map(o => (
+            <button key={o.id} onClick={() => onPick(o.id)} style={{ display: "flex", alignItems: "center", gap: 12, background: "#161d29", border: "1px solid #29323f", borderRadius: 12, padding: 14, textAlign: "left", color: "#e9ecf1" }}>
+              {o.logo ? <img src={o.logo} alt="" style={{ width: 38, height: 38, borderRadius: 9, objectFit: "cover" }} />
+                : <div style={{ width: 38, height: 38, borderRadius: 9, background: (o.accent || DEFAULT_ACCENT) + "22", display: "flex", alignItems: "center", justifyContent: "center" }}><Boxes size={20} color={o.accent || DEFAULT_ACCENT} /></div>}
+              <span className="sg" style={{ fontWeight: 700, flex: 1 }}>{o.name}</span>
+              <ArrowRight size={16} color="#8a93a3" />
+            </button>
+          ))}
+        </div>
+        <div style={{ textAlign: "center", marginTop: 16 }}>
+          <button onClick={onSignOut} style={btnGhost}><LogOut size={15} /> Salir</button>
+        </div>
+      </div>
+    </ScreenShell>
   );
 }
 
 /* ---------- Panel de administrador (multi-refaccionaria) ---------- */
-function AdminPanel({ orgs, setOrgs, onEnter }) {
+function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
   const blank = { name: "", logo: "", accent: DEFAULT_ACCENT };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [delId, setDelId] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [memberships, setMemberships] = useState([]);
 
   const accent = form.accent || DEFAULT_ACCENT;
 
-  const save = () => {
+  const loadUsers = async () => {
+    try {
+      const [us, ms] = await Promise.all([
+        db.select("profiles", "select=id,email,is_admin&order=created_at.asc"),
+        db.select("memberships", "select=id,user_id,org_id,role"),
+      ]);
+      setUsers(us || []); setMemberships(ms || []);
+    } catch (e) {}
+  };
+  useEffect(() => { loadUsers(); }, []);
+
+  const save = async () => {
     if (!form.name.trim()) return;
-    if (editId) {
-      setOrgs(prev => prev.map(o => o.id === editId ? { ...o, name: form.name.trim(), logo: form.logo, accent } : o));
-    } else {
-      setOrgs(prev => [...prev, { id: uid(), name: form.name.trim(), logo: form.logo, accent, createdAt: todayStr() }]);
-    }
-    setForm(blank); setEditId(null);
+    setBusy(true); setErr(null);
+    try {
+      if (editId) await db.update("organizations", editId, orgToDb({ name: form.name.trim(), logo: form.logo, accent }));
+      else await db.insert("organizations", orgToDb({ name: form.name.trim(), logo: form.logo, accent }));
+      setForm(blank); setEditId(null);
+      await reload();
+    } catch (e) { setErr(e.message || "No se pudo guardar"); }
+    finally { setBusy(false); }
   };
   const edit = (o) => { setEditId(o.id); setForm({ name: o.name, logo: o.logo || "", accent: o.accent || DEFAULT_ACCENT }); window.scrollTo({ top: 0, behavior: "smooth" }); };
-  const remove = (id) => {
-    setOrgs(prev => prev.filter(o => o.id !== id));
-    for (const k of ["parts", "sales", "expenses", "shop"]) {
-      try {
-        if (window.storage && typeof window.storage.delete === "function") window.storage.delete(`refa:org:${id}:${k}`);
-        else window.storage.set(`refa:org:${id}:${k}`, "").catch(() => {});
-      } catch (e) {}
-    }
-    setDelId(null);
-    if (editId === id) { setEditId(null); setForm(blank); }
+  const remove = async (id) => {
+    setBusy(true); setErr(null);
+    try { await db.remove("organizations", id); setDelId(null); if (editId === id) { setEditId(null); setForm(blank); } await reload(); await loadUsers(); }
+    catch (e) { setErr(e.message || "No se pudo eliminar"); }
+    finally { setBusy(false); }
+  };
+  const assign = async (userId, orgId) => {
+    if (!orgId) return;
+    try { await db.insert("memberships", { user_id: userId, org_id: orgId, role: "owner" }); await loadUsers(); }
+    catch (e) { setErr(e.message || "No se pudo asignar"); }
+  };
+  const unassign = async (memId) => {
+    try { await db.remove("memberships", memId); await loadUsers(); }
+    catch (e) { setErr(e.message || "No se pudo quitar"); }
   };
 
   return (
     <div style={{ "--accent": accent, "--accent-soft": accent + "22", minHeight: "100vh", background: "#0c1118", color: "#e9ecf1", fontFamily: "'Inter', system-ui, sans-serif" }}>
       <div style={{ maxWidth: 1040, margin: "0 auto", padding: "24px 20px" }}>
         {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-          <Shield size={22} color="var(--accent)" />
-          <div className="sg" style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.5 }}>Panel de administrador</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+              <Shield size={22} color="var(--accent)" />
+              <div className="sg" style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.5 }}>Panel de administrador</div>
+            </div>
+            <div style={{ fontSize: 13, color: "#8a93a3" }}>
+              Crea y personaliza las refaccionarias de tu plataforma. Cada una tiene su nombre, logo, colores y datos por separado.
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 12, color: "#8a93a3" }}>{adminEmail}</span>
+            <button onClick={onSignOut} style={{ ...btnGhost, padding: "8px 12px" }}><LogOut size={15} /> Salir</button>
+          </div>
         </div>
-        <div style={{ fontSize: 13, color: "#8a93a3", marginBottom: 22 }}>
-          Crea y personaliza las refaccionarias de tu plataforma. Cada una tiene su nombre, logo, colores y datos por separado.
-        </div>
+        {err && <div style={{ color: "#e25c5c", fontSize: 12, marginTop: 10 }}>{err}</div>}
+        <div style={{ height: 22 }} />
 
         {/* Crear / editar */}
         <Card style={{ marginBottom: 22 }}>
@@ -202,8 +481,8 @@ function AdminPanel({ orgs, setOrgs, onEnter }) {
               </div>
 
               <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-                <button onClick={save} disabled={!form.name.trim()} style={{ ...btnGold, opacity: form.name.trim() ? 1 : 0.5 }}>
-                  <Check size={15} /> {editId ? "Guardar cambios" : "Crear refaccionaria"}
+                <button onClick={save} disabled={!form.name.trim() || busy} style={{ ...btnGold, opacity: form.name.trim() && !busy ? 1 : 0.5 }}>
+                  {busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />} {editId ? "Guardar cambios" : "Crear refaccionaria"}
                 </button>
                 {editId && <button onClick={() => { setEditId(null); setForm(blank); }} style={btnGhost}><X size={15} /> Cancelar</button>}
               </div>
@@ -242,6 +521,45 @@ function AdminPanel({ orgs, setOrgs, onEnter }) {
             ))}
           </div>
         )}
+
+        {/* Cuentas de usuarios */}
+        <div style={{ height: 26 }} />
+        <SectionTitle icon={Users}>Cuentas de usuarios ({users.length})</SectionTitle>
+        <div style={{ fontSize: 12, color: "#8a93a3", marginBottom: 12 }}>
+          Cuando un dueño se registra, aquí aparece su correo. Asígnalo a su refaccionaria para que pueda entrar y ver solo sus datos.
+        </div>
+        <Card>
+          {users.length === 0 ? <EmptyState text="Aún no hay usuarios registrados." /> : users.map(u => {
+            const mine = memberships.filter(m => m.user_id === u.id);
+            const assignedIds = new Set(mine.map(m => m.org_id));
+            const available = orgs.filter(o => !assignedIds.has(o.id));
+            return (
+              <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: "1px solid #20283480", flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 180 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{u.email}{u.is_admin && <span style={{ fontSize: 10, color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: 6, padding: "1px 6px", marginLeft: 8 }}>ADMIN</span>}</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 5 }}>
+                    {mine.length === 0 && !u.is_admin && <span style={{ fontSize: 11, color: "#5a6372" }}>Sin refaccionaria asignada</span>}
+                    {mine.map(m => {
+                      const o = orgs.find(x => x.id === m.org_id);
+                      return (
+                        <span key={m.id} style={{ fontSize: 11, background: "#1c2433", border: "1px solid #29323f", borderRadius: 14, padding: "3px 6px 3px 10px", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          {o ? o.name : "—"}
+                          <button onClick={() => unassign(m.id)} style={{ background: "none", border: "none", color: "#8a93a3", padding: 0, display: "flex" }} title="Quitar"><X size={12} /></button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+                {!u.is_admin && available.length > 0 && (
+                  <select defaultValue="" onChange={e => { if (e.target.value) { assign(u.id, e.target.value); e.target.value = ""; } }} style={{ fontSize: 12 }}>
+                    <option value="">Asignar a…</option>
+                    {available.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                  </select>
+                )}
+              </div>
+            );
+          })}
+        </Card>
       </div>
 
       {/* Confirmación de borrado */}
@@ -268,7 +586,7 @@ function AdminPanel({ orgs, setOrgs, onEnter }) {
   );
 }
 
-function ShopApp({ org, onExit }) {
+function ShopApp({ org, onExit, isAdmin }) {
   const K = (k) => `refa:org:${org.id}:${k}`;
   const accent = org.accent || "#d4af37";
   const [tab, setTab] = useState("tablero");
@@ -280,32 +598,50 @@ function ShopApp({ org, onExit }) {
   const [shop, setShop] = useState({ name: org.name, phone: "", address: "", footer: "¡Gracias por su compra!" });
   const [ticketSale, setTicketSale] = useState(null);
 
-  // --- Persistence (por organización) ---
+  // Snapshots de lo último sincronizado a Supabase (para hacer diff)
+  const partsSnap = useRef(new Map());
+  const salesSnap = useRef(new Map());
+  const expensesSnap = useRef(new Map());
+
+  // --- Carga inicial desde Supabase ---
   useEffect(() => {
     (async () => {
       try {
-        const r = await window.storage.get(K("parts"));
-        if (r && r.value) setParts(JSON.parse(r.value));
-      } catch (e) {}
-      try {
-        const r = await window.storage.get(K("sales"));
-        if (r && r.value) setSales(JSON.parse(r.value));
-      } catch (e) {}
-      try {
-        const r = await window.storage.get(K("expenses"));
-        if (r && r.value) setExpenses(JSON.parse(r.value));
-      } catch (e) {}
-      try {
-        const r = await window.storage.get(K("shop"));
-        if (r && r.value) setShop(prev => ({ ...prev, ...JSON.parse(r.value) }));
-      } catch (e) {}
+        const [pp, ss, ee] = await Promise.all([
+          db.select("parts", `select=*&org_id=eq.${org.id}&order=created_at.desc`),
+          db.select("sales", `select=*&org_id=eq.${org.id}&order=created_at.desc`),
+          db.select("expenses", `select=*&org_id=eq.${org.id}&order=created_at.desc`),
+        ]);
+        const P = (pp || []).map(partFromDb), S = (ss || []).map(saleFromDb), E = (ee || []).map(expenseFromDb);
+        for (const p of P) partsSnap.current.set(p.id, JSON.stringify(partToDb(p, org.id)));
+        for (const s of S) salesSnap.current.set(s.id, JSON.stringify(saleToDb(s, org.id)));
+        for (const e of E) expensesSnap.current.set(e.id, JSON.stringify(expenseToDb(e, org.id)));
+        setParts(P); setSales(S); setExpenses(E);
+      } catch (e) { showToast("Error al cargar datos de la nube"); }
+      try { const r = await window.storage.get(K("shop")); if (r && r.value) setShop(prev => ({ ...prev, ...JSON.parse(r.value) })); } catch (e) {}
       setLoaded(true);
     })();
   }, []);
 
-  useEffect(() => { if (loaded) window.storage.set(K("parts"), JSON.stringify(parts)).catch(() => {}); }, [parts, loaded]);
-  useEffect(() => { if (loaded) window.storage.set(K("sales"), JSON.stringify(sales)).catch(() => {}); }, [sales, loaded]);
-  useEffect(() => { if (loaded) window.storage.set(K("expenses"), JSON.stringify(expenses)).catch(() => {}); }, [expenses, loaded]);
+  // --- Sincronización a Supabase (con pequeño retardo para agrupar cambios) ---
+  useEffect(() => {
+    if (!loaded) return;
+    const t = setTimeout(() => { syncTable("parts", parts, partsSnap.current, p => partToDb(p, org.id)).catch(() => showToast("Error al guardar inventario")); }, 400);
+    return () => clearTimeout(t);
+  }, [parts, loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const t = setTimeout(() => { syncTable("sales", sales, salesSnap.current, s => saleToDb(s, org.id)).catch(() => showToast("Error al guardar ventas")); }, 400);
+    return () => clearTimeout(t);
+  }, [sales, loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const t = setTimeout(() => { syncTable("expenses", expenses, expensesSnap.current, e => expenseToDb(e, org.id)).catch(() => showToast("Error al guardar gastos")); }, 400);
+    return () => clearTimeout(t);
+  }, [expenses, loaded]);
+
+  // La config del ticket (nombre/teléfono/dirección) se guarda local por org (cosmético)
+  useEffect(() => { if (loaded) window.storage.set(K("shop"), JSON.stringify(shop)).catch(() => {}); }, [shop, loaded]);
   useEffect(() => { if (loaded) window.storage.set(K("shop"), JSON.stringify(shop)).catch(() => {}); }, [shop, loaded]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2400); };
@@ -352,8 +688,8 @@ function ShopApp({ org, onExit }) {
             <MiniStat label="Valor inventario" value={fmt0(inventoryValue)} color="#3fa9f5" />
             <MiniStat label="Utilidad del mes" value={fmt0(monthNet)} color={monthNet >= 0 ? "#2ecc71" : "#e25c5c"} />
             {lowStock.length > 0 && <MiniStat label="Bajo mínimo" value={`${lowStock.length} pza`} color="#e8a13a" />}
-            <button onClick={onExit} style={{ ...btnGhost, padding: "8px 12px" }} title="Volver al panel de administrador">
-              <LogOut size={15} /> Panel
+            <button onClick={onExit} style={{ ...btnGhost, padding: "8px 12px" }} title={isAdmin ? "Volver al panel de administrador" : "Cerrar sesión"}>
+              <LogOut size={15} /> {isAdmin ? "Panel" : "Salir"}
             </button>
           </div>
         </div>
