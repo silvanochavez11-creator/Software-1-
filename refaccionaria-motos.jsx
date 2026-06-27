@@ -6,7 +6,7 @@ import {
 import Papa from "papaparse";
 import {
   Plus, Upload, TrendingUp, Wallet, Package, Trash2, Sparkles, Check, X, Loader2,
-  AlertTriangle, ShoppingCart, Search, Pencil, Boxes, DollarSign, Receipt, BarChart3
+  AlertTriangle, ShoppingCart, Search, Pencil, Boxes, DollarSign, Receipt, BarChart3, Printer
 } from "lucide-react";
 
 const fmt = (n) =>
@@ -27,6 +27,8 @@ export default function RefaccionariaApp() {
   const [expenses, setExpenses] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [toast, setToast] = useState(null);
+  const [shop, setShop] = useState({ name: "Refaccionaria de Motos", phone: "", address: "", footer: "¡Gracias por su compra!" });
+  const [ticketSale, setTicketSale] = useState(null);
 
   // --- Persistence ---
   useEffect(() => {
@@ -43,6 +45,10 @@ export default function RefaccionariaApp() {
         const r = await window.storage.get("refa:expenses");
         if (r && r.value) setExpenses(JSON.parse(r.value));
       } catch (e) {}
+      try {
+        const r = await window.storage.get("refa:shop");
+        if (r && r.value) setShop(prev => ({ ...prev, ...JSON.parse(r.value) }));
+      } catch (e) {}
       setLoaded(true);
     })();
   }, []);
@@ -50,6 +56,7 @@ export default function RefaccionariaApp() {
   useEffect(() => { if (loaded) window.storage.set("refa:parts", JSON.stringify(parts)).catch(() => {}); }, [parts, loaded]);
   useEffect(() => { if (loaded) window.storage.set("refa:sales", JSON.stringify(sales)).catch(() => {}); }, [sales, loaded]);
   useEffect(() => { if (loaded) window.storage.set("refa:expenses", JSON.stringify(expenses)).catch(() => {}); }, [expenses, loaded]);
+  useEffect(() => { if (loaded) window.storage.set("refa:shop", JSON.stringify(shop)).catch(() => {}); }, [shop, loaded]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2400); };
 
@@ -94,6 +101,13 @@ export default function RefaccionariaApp() {
         table { width:100%; border-collapse:collapse; }
         th { text-align:left; font-size:11px; color:#8a93a3; font-weight:600; padding:8px 8px; border-bottom:1px solid #29323f; }
         td { font-size:13px; padding:9px 8px; border-bottom:1px solid #20283480; }
+        @media print {
+          body * { visibility: hidden !important; }
+          .ticket-print, .ticket-print * { visibility: visible !important; }
+          .ticket-print { position: absolute; left: 0; top: 0; width: 80mm; margin: 0; padding: 4mm; color: #000; background: #fff; }
+          .no-print { display: none !important; }
+          @page { size: 80mm auto; margin: 0; }
+        }
       `}</style>
 
       {/* Header */}
@@ -146,7 +160,7 @@ export default function RefaccionariaApp() {
           <Inventario parts={parts} setParts={setParts} showToast={showToast} />
         )}
         {tab === "ventas" && (
-          <PuntoDeVenta parts={parts} setParts={setParts} sales={sales} setSales={setSales} showToast={showToast} />
+          <PuntoDeVenta parts={parts} setParts={setParts} sales={sales} setSales={setSales} showToast={showToast} onTicket={setTicketSale} />
         )}
         {tab === "gastos" && (
           <Gastos expenses={expenses} setExpenses={setExpenses} showToast={showToast} />
@@ -159,8 +173,12 @@ export default function RefaccionariaApp() {
         )}
       </div>
 
+      {ticketSale && (
+        <TicketModal sale={ticketSale} shop={shop} setShop={setShop} onClose={() => setTicketSale(null)} />
+      )}
+
       {toast && (
-        <div style={{
+        <div className="no-print" style={{
           position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)",
           background: "#1c2433", border: "1px solid #d4af37", color: "#e9ecf1", padding: "10px 18px",
           borderRadius: 10, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 8, zIndex: 50
@@ -499,7 +517,7 @@ function Inventario({ parts, setParts, showToast }) {
 }
 
 /* ---------- Punto de venta ---------- */
-function PuntoDeVenta({ parts, setParts, sales, setSales, showToast }) {
+function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket }) {
   const [cart, setCart] = useState([]); // {partId, name, sku, qty, price, cost, maxStock}
   const [q, setQ] = useState("");
   const [customer, setCustomer] = useState("");
@@ -540,9 +558,12 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast }) {
       const p = parts.find(p => p.id === i.partId);
       if (!p || (Number(p.stock) || 0) < i.qty) return showToast(`Stock insuficiente de ${i.name}`);
     }
+    const nextFolio = sales.reduce((m, s) => Math.max(m, s.folio || 0), 0) + 1;
     const sale = {
       id: uid(),
+      folio: nextFolio,
       date: todayStr(),
+      time: new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }),
       customer: customer.trim(),
       items: cart.map(({ partId, name, sku, qty, price, cost }) => ({ partId, name, sku, qty, price, cost })),
       total, cogs, profit,
@@ -553,7 +574,8 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast }) {
       return line ? { ...p, stock: Math.max(0, (Number(p.stock) || 0) - line.qty) } : p;
     }));
     setCart([]); setCustomer("");
-    showToast(`Venta registrada: ${fmt(total)} (utilidad ${fmt(profit)})`);
+    showToast(`Venta #${nextFolio} registrada: ${fmt(total)} (utilidad ${fmt(profit)})`);
+    onTicket && onTicket(sale);
   };
 
   return (
@@ -583,9 +605,12 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast }) {
         {sales.length === 0 && <EmptyState text="Aún no hay ventas." />}
         <div style={{ maxHeight: 220, overflowY: "auto" }}>
           {sales.slice(0, 12).map(s => (
-            <div key={s.id} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: "1px solid #20283480", fontSize: 12 }}>
-              <span style={{ color: "#8a93a3" }}>{s.date} · {s.items.reduce((a, i) => a + i.qty, 0)} pza{s.customer ? ` · ${s.customer}` : ""}</span>
-              <span style={{ fontWeight: 600 }}>{fmt(s.total)} <span style={{ color: "#2ecc71", fontWeight: 500 }}>(+{fmt0(s.profit)})</span></span>
+            <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid #20283480", fontSize: 12 }}>
+              <span style={{ color: "#8a93a3" }}>{s.folio ? `#${s.folio} · ` : ""}{s.date} · {s.items.reduce((a, i) => a + i.qty, 0)} pza{s.customer ? ` · ${s.customer}` : ""}</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontWeight: 600 }}>{fmt(s.total)} <span style={{ color: "#2ecc71", fontWeight: 500 }}>(+{fmt0(s.profit)})</span></span>
+                <button onClick={() => onTicket && onTicket(s)} style={iconBtn} title="Imprimir ticket"><Printer size={14} /></button>
+              </span>
             </div>
           ))}
         </div>
@@ -933,7 +958,81 @@ function Asistente({ parts, setParts, showToast }) {
   );
 }
 
+/* ---------- Ticket imprimible ---------- */
+function TicketModal({ sale, shop, setShop, onClose }) {
+  const [editing, setEditing] = useState(false);
+  const units = sale.items.reduce((a, i) => a + i.qty, 0);
+  const upd = (field, val) => setShop(prev => ({ ...prev, [field]: val }));
+
+  return (
+    <div className="no-print" onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "#000a", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 24, overflowY: "auto", zIndex: 60 }}>
+      <div onClick={e => e.stopPropagation()} style={{ width: 360, maxWidth: "100%" }}>
+        {/* Controles (no se imprimen) */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, justifyContent: "space-between", alignItems: "center" }}>
+          <div className="sg" style={{ fontSize: 14, fontWeight: 700, color: "#e9ecf1" }}>Ticket #{sale.folio}</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setEditing(v => !v)} style={btnGhost}><Pencil size={14} /> Datos</button>
+            <button onClick={() => window.print()} style={btnGold}><Printer size={15} /> Imprimir</button>
+            <button onClick={onClose} style={btnGhost}><X size={15} /></button>
+          </div>
+        </div>
+
+        {editing && (
+          <div style={{ background: "#161d29", border: "1px solid #29323f", borderRadius: 12, padding: 14, marginBottom: 12, display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "#8a93a3" }}>Datos del negocio (se guardan para los próximos tickets):</div>
+            <input placeholder="Nombre del negocio" value={shop.name} onChange={e => upd("name", e.target.value)} />
+            <input placeholder="Teléfono" value={shop.phone} onChange={e => upd("phone", e.target.value)} />
+            <input placeholder="Dirección" value={shop.address} onChange={e => upd("address", e.target.value)} />
+            <input placeholder="Mensaje al pie" value={shop.footer} onChange={e => upd("footer", e.target.value)} />
+          </div>
+        )}
+
+        {/* Ticket imprimible */}
+        <div className="ticket-print" style={{ background: "#fff", color: "#000", borderRadius: 8, padding: 18, fontFamily: "'Courier New', monospace", fontSize: 12, lineHeight: 1.5 }}>
+          <div style={{ textAlign: "center", marginBottom: 8 }}>
+            <div style={{ fontWeight: 700, fontSize: 15, textTransform: "uppercase" }}>{shop.name || "Refaccionaria"}</div>
+            {shop.address && <div>{shop.address}</div>}
+            {shop.phone && <div>Tel. {shop.phone}</div>}
+          </div>
+          <div style={{ borderTop: "1px dashed #000", borderBottom: "1px dashed #000", padding: "6px 0", margin: "6px 0" }}>
+            <div style={{ display: "flex", justifyContent: "space-between" }}><span>Ticket:</span><span>#{sale.folio}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}><span>Fecha:</span><span>{sale.date} {sale.time || ""}</span></div>
+            {sale.customer && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Cliente:</span><span>{sale.customer}</span></div>}
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ borderBottom: "1px dashed #000" }}>
+                <th style={tkTh}>Cant</th><th style={{ ...tkTh, textAlign: "left" }}>Descripción</th><th style={{ ...tkTh, textAlign: "right" }}>Importe</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sale.items.map((i, idx) => (
+                <tr key={idx}>
+                  <td style={tkTd}>{i.qty}</td>
+                  <td style={{ ...tkTd, textAlign: "left" }}>
+                    {i.name}
+                    <div style={{ fontSize: 10, color: "#444" }}>{fmt(i.price)} c/u</div>
+                  </td>
+                  <td style={{ ...tkTd, textAlign: "right" }}>{fmt(i.qty * i.price)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ borderTop: "1px dashed #000", marginTop: 6, paddingTop: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between" }}><span>Artículos:</span><span>{units}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: 15, marginTop: 2 }}><span>TOTAL:</span><span>{fmt(sale.total)}</span></div>
+          </div>
+          <div style={{ textAlign: "center", marginTop: 12, fontSize: 12 }}>{shop.footer || "¡Gracias por su compra!"}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- styles ---------- */
+const tkTh = { fontSize: 11, padding: "3px 2px", textAlign: "center", color: "#000", fontWeight: 700, borderBottom: "1px dashed #000" };
+const tkTd = { fontSize: 12, padding: "3px 2px", textAlign: "center", color: "#000", verticalAlign: "top", borderBottom: "none" };
 const lbl = { fontSize: 11, color: "#8a93a3", display: "block", marginBottom: 4 };
 const btnGold = { background: "#d4af37", color: "#0c1118", border: "none", borderRadius: 8, padding: "10px 16px", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6 };
 const btnGhost = { background: "transparent", border: "1px solid #29323f", color: "#8a93a3", borderRadius: 8, padding: "10px 16px", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6 };
