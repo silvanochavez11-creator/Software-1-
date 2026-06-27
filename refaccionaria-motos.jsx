@@ -338,6 +338,15 @@ function Inventario({ parts, setParts, showToast }) {
   const [form, setForm] = useState(emptyPart());
   const [editId, setEditId] = useState(null);
   const [q, setQ] = useState("");
+  const [wipeStep, setWipeStep] = useState(0); // 0 = oculto, 1 = primera confirmación, 2 = segunda confirmación
+
+  const wipeAll = () => {
+    setParts([]);
+    setEditId(null);
+    setForm(emptyPart());
+    setWipeStep(0);
+    showToast("Inventario vaciado");
+  };
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -466,7 +475,43 @@ function Inventario({ parts, setParts, showToast }) {
             <Search size={14} color="#5a6372" style={{ position: "absolute", left: 10, top: 11 }} />
             <input placeholder="Buscar pieza, marca, moto…" value={q} onChange={e => setQ(e.target.value)} style={{ paddingLeft: 30, width: 240 }} />
           </div>
+          {parts.length > 0 && (
+            <button onClick={() => setWipeStep(1)} style={btnDanger} title="Eliminar todo el inventario">
+              <Trash2 size={15} /> Vaciar inventario
+            </button>
+          )}
         </div>
+
+        {wipeStep > 0 && (
+          <div className="no-print" onClick={() => setWipeStep(0)}
+            style={{ position: "fixed", inset: 0, background: "#000a", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, zIndex: 60 }}>
+            <div onClick={e => e.stopPropagation()}
+              style={{ width: 380, maxWidth: "100%", background: "#161d29", border: "1px solid #e25c5c", borderRadius: 14, padding: 22 }}>
+              <div className="sg" style={{ fontSize: 16, fontWeight: 700, color: "#e25c5c", display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <AlertTriangle size={18} /> {wipeStep === 1 ? "¿Eliminar todo el inventario?" : "Confirma de nuevo"}
+              </div>
+              <div style={{ fontSize: 13, color: "#c4ccd8", marginBottom: 18, lineHeight: 1.5 }}>
+                {wipeStep === 1
+                  ? `Vas a borrar las ${parts.length} refacciones del inventario. Esta acción no se puede deshacer.`
+                  : "Última oportunidad: pulsa \"Sí, borrar todo\" solo si de verdad quieres vaciar el inventario completo."}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setWipeStep(0)} style={{ ...btnGhost, flex: 1, justifyContent: "center" }}>
+                  <X size={15} /> Cancelar
+                </button>
+                {wipeStep === 1 ? (
+                  <button onClick={() => setWipeStep(2)} style={{ ...btnDanger, flex: 1, justifyContent: "center" }}>
+                    Sí, continuar
+                  </button>
+                ) : (
+                  <button onClick={wipeAll} style={{ ...btnDanger, flex: 1, justifyContent: "center" }}>
+                    <Trash2 size={15} /> Sí, borrar todo
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
         {filtered.length === 0 ? (
           <EmptyState text={parts.length === 0 ? "Aún no hay refacciones. Agrega la primera arriba o importa un CSV." : "Sin resultados para tu búsqueda."} />
         ) : (
@@ -1036,5 +1081,6 @@ const tkTd = { fontSize: 12, padding: "3px 2px", textAlign: "center", color: "#0
 const lbl = { fontSize: 11, color: "#8a93a3", display: "block", marginBottom: 4 };
 const btnGold = { background: "#d4af37", color: "#0c1118", border: "none", borderRadius: 8, padding: "10px 16px", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6 };
 const btnGhost = { background: "transparent", border: "1px solid #29323f", color: "#8a93a3", borderRadius: 8, padding: "10px 16px", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6 };
+const btnDanger = { background: "#e25c5c22", border: "1px solid #e25c5c", color: "#e25c5c", borderRadius: 8, padding: "10px 16px", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 6 };
 const iconBtn = { background: "none", border: "none", color: "#5a6372", padding: 4, marginLeft: 2 };
 const stepBtn = { background: "#1c2433", border: "1px solid #29323f", color: "#e9ecf1", borderRadius: 6, width: 22, height: 22, fontSize: 14, lineHeight: 1, display: "inline-flex", alignItems: "center", justifyContent: "center" };
