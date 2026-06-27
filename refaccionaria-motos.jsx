@@ -21,6 +21,13 @@ const EXPENSE_CATS = ["Compra a proveedor", "Renta", "Servicios (luz/agua/intern
 const uid = () => crypto.randomUUID();
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
+// Almacenamiento local del navegador (sesión y config del ticket).
+// Misma interfaz async que usaba store, pero sobre localStorage real.
+const store = {
+  get: async (k) => { try { const v = localStorage.getItem(k); return v != null ? { value: v } : null; } catch (e) { return null; } },
+  set: async (k, v) => { try { if (v === "" || v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} },
+};
+
 const DEFAULT_ACCENT = "#d4af37";
 const ACCENT_PRESETS = ["#d4af37", "#e2574c", "#2ecc71", "#3fa9f5", "#9b59b6", "#e8852b", "#1abc9c", "#ec4899"];
 
@@ -63,7 +70,7 @@ function saveSession(d) {
     expires_at: Date.now() + ((d.expires_in || 3600) * 1000),
     user: d.user,
   };
-  try { window.storage.set(SESSION_KEY, JSON.stringify(_session)); } catch (e) {}
+  try { store.set(SESSION_KEY, JSON.stringify(_session)); } catch (e) {}
   return _session;
 }
 
@@ -91,16 +98,16 @@ async function refreshSession() {
   return saveSession(await sbAuth("token?grant_type=refresh_token", { refresh_token: _session.refresh_token }));
 }
 async function restoreSession() {
-  try { const r = await window.storage.get(SESSION_KEY); if (r && r.value) _session = JSON.parse(r.value); } catch (e) {}
+  try { const r = await store.get(SESSION_KEY); if (r && r.value) _session = JSON.parse(r.value); } catch (e) {}
   if (_session && _session.expires_at < Date.now() + 60000) {
-    try { await refreshSession(); } catch (e) { _session = null; try { window.storage.set(SESSION_KEY, ""); } catch (er) {} }
+    try { await refreshSession(); } catch (e) { _session = null; try { store.set(SESSION_KEY, ""); } catch (er) {} }
   }
   return _session;
 }
 async function signOut() {
   try { await fetch(`${SB_URL}/auth/v1/logout`, { method: "POST", headers: { apikey: SB_KEY, Authorization: `Bearer ${_session?.access_token}` } }); } catch (e) {}
   _session = null;
-  try { window.storage.set(SESSION_KEY, ""); } catch (e) {}
+  try { store.set(SESSION_KEY, ""); } catch (e) {}
 }
 
 async function sbFetch(path, opts = {}) {
@@ -618,7 +625,7 @@ function ShopApp({ org, onExit, isAdmin }) {
         for (const e of E) expensesSnap.current.set(e.id, JSON.stringify(expenseToDb(e, org.id)));
         setParts(P); setSales(S); setExpenses(E);
       } catch (e) { showToast("Error al cargar datos de la nube"); }
-      try { const r = await window.storage.get(K("shop")); if (r && r.value) setShop(prev => ({ ...prev, ...JSON.parse(r.value) })); } catch (e) {}
+      try { const r = await store.get(K("shop")); if (r && r.value) setShop(prev => ({ ...prev, ...JSON.parse(r.value) })); } catch (e) {}
       setLoaded(true);
     })();
   }, []);
@@ -641,8 +648,8 @@ function ShopApp({ org, onExit, isAdmin }) {
   }, [expenses, loaded]);
 
   // La config del ticket (nombre/teléfono/dirección) se guarda local por org (cosmético)
-  useEffect(() => { if (loaded) window.storage.set(K("shop"), JSON.stringify(shop)).catch(() => {}); }, [shop, loaded]);
-  useEffect(() => { if (loaded) window.storage.set(K("shop"), JSON.stringify(shop)).catch(() => {}); }, [shop, loaded]);
+  useEffect(() => { if (loaded) store.set(K("shop"), JSON.stringify(shop)).catch(() => {}); }, [shop, loaded]);
+  useEffect(() => { if (loaded) store.set(K("shop"), JSON.stringify(shop)).catch(() => {}); }, [shop, loaded]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2400); };
 
