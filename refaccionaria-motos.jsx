@@ -649,7 +649,6 @@ function ShopApp({ org, onExit, isAdmin }) {
 
   // La config del ticket (nombre/teléfono/dirección) se guarda local por org (cosmético)
   useEffect(() => { if (loaded) store.set(K("shop"), JSON.stringify(shop)).catch(() => {}); }, [shop, loaded]);
-  useEffect(() => { if (loaded) store.set(K("shop"), JSON.stringify(shop)).catch(() => {}); }, [shop, loaded]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2400); };
 
@@ -975,28 +974,56 @@ function Inventario({ parts, setParts, showToast }) {
   };
 
   const importCSV = (file) => {
+    // normaliza encabezados/valores: sin acentos, minúsculas, solo letras y números
+    const norm = (s) => (s == null ? "" : s.toString()).normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const parseNum = (v) => {
+      let s = String(v == null ? "" : v).replace(/[^\d.,-]/g, "").trim();
+      if (s.includes(",") && s.includes(".")) s = s.replace(/,/g, "");   // 1,234.56 -> 1234.56
+      else if (s.includes(",")) s = s.replace(",", ".");                  // 1234,56 -> 1234.56
+      const n = parseFloat(s);
+      return isNaN(n) ? 0 : n;
+    };
+    const SYN = {
+      name: ["nombre", "name", "producto", "descripcion", "descripciondelproducto", "nombredelproducto", "nombreproducto", "refaccion", "pieza", "articulo", "item"],
+      sku: ["sku", "codigo", "code", "clave", "noparte", "numeroparte", "partno", "nodeparte"],
+      brand: ["marca", "brand", "fabricante"],
+      category: ["categoria", "category", "tipo", "linea"],
+      compat: ["compatibilidad", "compat", "modelo", "aplicacion", "moto", "compatible"],
+      stock: ["stock", "cantidad", "existencia", "existencias", "qty", "piezas", "cant", "cantidaddisponible", "enexistencia"],
+      minStock: ["minimo", "min", "stockminimo", "minstock", "minimostock"],
+      cost: ["costo", "cost", "compra", "costounitario", "preciocompra", "preciodecompra", "costodecompra"],
+      price: ["precio", "price", "venta", "precioventa", "preciodeventa", "pventa", "precioventaunitario", "pvp", "preciopublico"],
+    };
     Papa.parse(file, {
       header: true, skipEmptyLines: true,
+      delimitersToGuess: [",", ";", "\t", "|"],
+      transformHeader: (h) => norm(h),
       complete: (res) => {
-        const rows = res.data;
+        const rows = res.data || [];
+        const pick = (r, key) => { for (const c of SYN[key]) if (r[c] != null && r[c] !== "") return r[c]; return ""; };
         const added = [];
         for (const r of rows) {
-          const name = (r.nombre || r.name || r.Nombre || "").toString().trim();
+          const name = pick(r, "name").toString().trim();
           if (!name) continue;
+          const catRaw = pick(r, "category").toString().trim();
+          const cat = PART_CATS.find(c => norm(c) === norm(catRaw)) || (catRaw ? "Otro" : PART_CATS[PART_CATS.length - 1]);
           added.push({
             id: uid(),
-            sku: (r.sku || r.SKU || r.codigo || "").toString(),
+            sku: pick(r, "sku").toString(),
             name,
-            brand: (r.marca || r.brand || "").toString(),
-            category: (r.categoria || r.category || PART_CATS[PART_CATS.length - 1]).toString(),
-            compat: (r.compatibilidad || r.compat || r.modelo || "").toString(),
-            stock: Math.max(0, parseInt(r.stock || r.cantidad || 0) || 0),
-            minStock: Math.max(0, parseInt(r.minimo || r.minStock || r.min || 0) || 0),
-            cost: Math.max(0, parseFloat(String(r.costo || r.cost || 0).replace(/[^0-9.-]/g, "")) || 0),
-            price: Math.max(0, parseFloat(String(r.precio || r.price || 0).replace(/[^0-9.-]/g, "")) || 0),
+            brand: pick(r, "brand").toString(),
+            category: cat,
+            compat: pick(r, "compat").toString(),
+            stock: Math.max(0, Math.round(parseNum(pick(r, "stock")))),
+            minStock: Math.max(0, Math.round(parseNum(pick(r, "minStock")))),
+            cost: Math.max(0, parseNum(pick(r, "cost"))),
+            price: Math.max(0, parseNum(pick(r, "price"))),
           });
         }
-        if (!added.length) return showToast("No reconocí columnas (usa: nombre, sku, marca, stock, costo, precio…)");
+        if (!added.length) {
+          const cols = Object.keys(rows[0] || {}).filter(Boolean).join(", ") || "ninguna";
+          return showToast(`No encontré la columna de "nombre". Columnas detectadas: ${cols}`);
+        }
         setParts(prev => [...added, ...prev]);
         showToast(`${added.length} refacciones importadas`);
       },
