@@ -1481,20 +1481,17 @@ function Asistente({ parts, setParts, showToast }) {
       category: p.category, stock: Number(p.stock) || 0, cost: Number(p.cost) || 0, price: Number(p.price) || 0,
     }));
     try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const SYSTEM = "Eres asistente del inventario de una refaccionaria de motos. Recibes (1) el INVENTARIO ACTUAL como arreglo JSON (cada pieza tiene 'ref' numérico, name, brand, compat, category, stock, cost, price) y (2) una INSTRUCCIÓN del usuario en español. Devuelve SOLO un objeto JSON con la forma {\"operations\": [ ... ]}, sin texto adicional, sin markdown. Cada elemento de 'operations' es una operación:\n- Crear pieza nueva: {\"op\":\"create\",\"name\":string,\"brand\":string,\"category\":string,\"compat\":string,\"stock\":number,\"cost\":number,\"price\":number}\n- Modificar una pieza existente: {\"op\":\"update\",\"ref\":number,\"set\":{campo:valor,...}} donde campo ∈ name,brand,category,compat,stock,minStock,cost,price. Incluye en 'set' SOLO los campos que cambian, con su valor FINAL ya calculado.\n- Reabastecer (sumar al stock): {\"op\":\"restock\",\"ref\":number,\"add\":number,\"cost\":number(opcional),\"price\":number(opcional)}\n- Eliminar pieza: {\"op\":\"delete\",\"ref\":number}\nReglas: 'category' debe ser una de: Motor, Frenos, Suspensión, Eléctrico, Transmisión, Llantas y cámaras, Aceites y lubricantes, Carrocería, Accesorios, Otro. Si el usuario pide algo relativo (ej. 'sube 10% el precio', 'baja 20 pesos', 'duplica el stock') CALCULA tú el número final usando el valor actual del inventario. Una instrucción puede afectar a varias piezas (ej. 'sube 10% todos los aceites' => varias operaciones update). Si llega mercancía de una pieza que YA existe, usa 'restock'; si es pieza nueva, 'create'; si solo cambian datos de una pieza existente, 'update'. Para identificar la pieza usa name/brand/compat del inventario. Si no estás seguro de a qué pieza se refiere, omítela en lugar de adivinar.";
+      const response = await fetch("/api/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 2000,
-          system: "Eres asistente del inventario de una refaccionaria de motos. Recibes (1) el INVENTARIO ACTUAL como arreglo JSON (cada pieza tiene 'ref' numérico, name, brand, compat, category, stock, cost, price) y (2) una INSTRUCCIÓN del usuario en español. Devuelve SOLO un arreglo JSON de operaciones, sin texto, sin markdown, sin backticks. Tipos de operación:\n- Crear pieza nueva: {\"op\":\"create\",\"name\":string,\"brand\":string,\"category\":string,\"compat\":string,\"stock\":number,\"cost\":number,\"price\":number}\n- Modificar una pieza existente: {\"op\":\"update\",\"ref\":number,\"set\":{campo:valor,...}} donde campo ∈ name,brand,category,compat,stock,minStock,cost,price. Incluye en 'set' SOLO los campos que cambian, con su valor FINAL ya calculado.\n- Reabastecer (sumar al stock): {\"op\":\"restock\",\"ref\":number,\"add\":number,\"cost\":number(opcional),\"price\":number(opcional)}\n- Eliminar pieza: {\"op\":\"delete\",\"ref\":number}\nReglas: 'category' debe ser una de: Motor, Frenos, Suspensión, Eléctrico, Transmisión, Llantas y cámaras, Aceites y lubricantes, Carrocería, Accesorios, Otro. Si el usuario pide algo relativo (ej. 'sube 10% el precio', 'baja 20 pesos', 'duplica el stock') CALCULA tú el número final usando el valor actual del inventario. Una instrucción puede afectar a varias piezas (ej. 'sube 10% todos los aceites' => varias operaciones update). Si llega mercancía de una pieza que YA existe, usa 'restock'; si es pieza nueva, 'create'; si solo cambian datos de una pieza existente, 'update'. Para identificar la pieza usa name/brand/compat del inventario. Si no estás seguro de a qué pieza se refiere, omítela en lugar de adivinar.",
-          messages: [{ role: "user", content: `INVENTARIO ACTUAL:\n${JSON.stringify(refList)}\n\nINSTRUCCIÓN:\n${text}` }],
-        }),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${_session?.access_token || ""}` },
+        body: JSON.stringify({ system: SYSTEM, user: `INVENTARIO ACTUAL:\n${JSON.stringify(refList)}\n\nINSTRUCCIÓN:\n${text}` }),
       });
       const data = await response.json();
-      const raw = (data.content || []).map(b => b.text || "").join("\n");
-      const clean = raw.replace(/```json|```/g, "").trim();
-      const ops = JSON.parse(clean);
+      if (!response.ok) { setError(data.error || "No se pudo procesar. Revisa que la IA esté configurada en Vercel."); return; }
+      const clean = (data.text || "").replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(clean);
+      const ops = Array.isArray(parsed) ? parsed : (parsed.operations || parsed.ops || parsed.items || []);
       if (!Array.isArray(ops) || ops.length === 0) {
         setError("No entendí ninguna acción clara. Sé más específico (qué pieza y qué cambio).");
         return;
