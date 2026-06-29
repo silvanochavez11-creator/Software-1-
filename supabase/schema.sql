@@ -8,12 +8,15 @@
 -- Una fila por refaccionaria (negocio / "tenant")
 create table if not exists public.organizations (
   id          uuid primary key default gen_random_uuid(),
-  name        text not null,
-  logo_url    text,                       -- dataURL (base64) o URL del logo
-  accent      text default '#d4af37',     -- color de marca
-  status      text default 'active',      -- active | suspended
-  created_at  timestamptz default now()
+  name              text not null,
+  logo_url          text,                   -- dataURL (base64) o URL del logo
+  accent            text default '#d4af37', -- color de marca
+  status            text default 'active',  -- active | suspended
+  default_min_stock int default 0,          -- stock mínimo por defecto del negocio
+  created_at        timestamptz default now()
 );
+-- Para bases ya creadas: agrega la columna si falta
+alter table public.organizations add column if not exists default_min_stock int default 0;
 
 -- Espejo de auth.users: guarda el rol de plataforma (super-admin o no)
 create table if not exists public.profiles (

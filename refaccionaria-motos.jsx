@@ -166,8 +166,8 @@ const db = {
 };
 
 /* ---- Mapeo entre la forma de la app (camelCase) y las columnas de la BD ---- */
-const orgFromDb = (r) => ({ id: r.id, name: r.name, logo: r.logo_url || "", accent: r.accent || DEFAULT_ACCENT, createdAt: (r.created_at || "").slice(0, 10) });
-const orgToDb = (o) => ({ name: o.name, logo_url: o.logo || null, accent: o.accent || DEFAULT_ACCENT });
+const orgFromDb = (r) => ({ id: r.id, name: r.name, logo: r.logo_url || "", accent: r.accent || DEFAULT_ACCENT, defaultMin: Number(r.default_min_stock) || 0, createdAt: (r.created_at || "").slice(0, 10) });
+const orgToDb = (o) => { const r = { name: o.name, logo_url: o.logo || null, accent: o.accent || DEFAULT_ACCENT }; if (o.defaultMin != null) r.default_min_stock = Number(o.defaultMin) || 0; return r; };
 
 const partFromDb = (r) => ({ id: r.id, sku: r.sku || "", name: r.name, brand: r.brand || "", category: r.category || "Otro", compat: r.compat || "", stock: Number(r.stock) || 0, minStock: Number(r.min_stock) || 0, cost: Number(r.cost) || 0, price: Number(r.price) || 0 });
 const partToDb = (p, org_id) => ({ id: p.id, org_id, sku: p.sku || null, name: p.name, brand: p.brand || null, category: p.category || null, compat: p.compat || null, stock: Number(p.stock) || 0, min_stock: Number(p.minStock) || 0, cost: Number(p.cost) || 0, price: Number(p.price) || 0 });
@@ -671,6 +671,11 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
     await db.update("organizations", org.id, orgToDb(updated));
     setOrg(updated);
   };
+  // Aplica un mínimo a las piezas que aún están en 0 (las cargadas sin mínimo)
+  const applyMinToZero = (val) => {
+    const v = Math.max(0, parseInt(val) || 0);
+    setParts(prev => prev.map(p => (Number(p.minStock) || 0) === 0 ? { ...p, minStock: v } : p));
+  };
 
   // Snapshots de lo último sincronizado a Supabase (para hacer diff)
   const partsSnap = useRef(new Map());
@@ -827,7 +832,7 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
           />
         )}
         {tab === "inventario" && (
-          <Inventario parts={parts} setParts={setParts} showToast={showToast} />
+          <Inventario parts={parts} setParts={setParts} showToast={showToast} defaultMin={org.defaultMin || 0} />
         )}
         {tab === "ventas" && (
           <PuntoDeVenta parts={parts} setParts={setParts} sales={sales} setSales={setSales} showToast={showToast} onTicket={setTicketSale} />
@@ -839,7 +844,7 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
           <Contabilidad sales={sales} expenses={expenses} />
         )}
         {tab === "asistente" && (
-          <Asistente parts={parts} setParts={setParts} showToast={showToast} />
+          <Asistente parts={parts} setParts={setParts} showToast={showToast} defaultMin={org.defaultMin || 0} />
         )}
       </div>
 
@@ -848,7 +853,7 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
       )}
 
       {showSettings && (
-        <ShopSettings org={org} saveOrg={saveOrg} onClose={() => setShowSettings(false)} showToast={showToast} />
+        <ShopSettings org={org} saveOrg={saveOrg} onClose={() => setShowSettings(false)} showToast={showToast} applyMinToZero={applyMinToZero} />
       )}
 
       {showReorder && (
@@ -1012,7 +1017,7 @@ function Tablero({ inventoryValue, inventoryRetail, lowStock, monthRevenue, mont
 /* ---------- Inventario ---------- */
 const emptyPart = () => ({ sku: "", name: "", brand: "", category: PART_CATS[0], compat: "", stock: "", minStock: "", cost: "", price: "" });
 
-function Inventario({ parts, setParts, showToast }) {
+function Inventario({ parts, setParts, showToast, defaultMin = 0 }) {
   const [form, setForm] = useState(emptyPart());
   const [editId, setEditId] = useState(null);
   const [q, setQ] = useState("");
@@ -1040,7 +1045,7 @@ function Inventario({ parts, setParts, showToast }) {
       ...form,
       name: form.name.trim(),
       stock: Math.max(0, parseInt(form.stock) || 0),
-      minStock: Math.max(0, parseInt(form.minStock) || 0),
+      minStock: String(form.minStock).trim() !== "" ? Math.max(0, parseInt(form.minStock) || 0) : defaultMin,
       cost: Math.max(0, parseFloat(form.cost) || 0),
       price: Math.max(0, parseFloat(form.price) || 0),
     };
@@ -1111,6 +1116,7 @@ function Inventario({ parts, setParts, showToast }) {
           if (!name) continue;
           const catRaw = pick(r, "category").toString().trim();
           const cat = PART_CATS.find(c => norm(c) === norm(catRaw)) || (catRaw ? "Otro" : PART_CATS[PART_CATS.length - 1]);
+          const minRaw = pick(r, "minStock");
           added.push({
             id: uid(),
             sku: pick(r, "sku").toString(),
@@ -1119,7 +1125,7 @@ function Inventario({ parts, setParts, showToast }) {
             category: cat,
             compat: pick(r, "compat").toString(),
             stock: Math.max(0, Math.round(parseNum(pick(r, "stock")))),
-            minStock: Math.max(0, Math.round(parseNum(pick(r, "minStock")))),
+            minStock: minRaw !== "" ? Math.max(0, Math.round(parseNum(minRaw))) : defaultMin,
             cost: Math.max(0, parseNum(pick(r, "cost"))),
             price: Math.max(0, parseNum(pick(r, "price"))),
           });
@@ -1150,7 +1156,7 @@ function Inventario({ parts, setParts, showToast }) {
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: 10 }}>
           <div><label style={lbl}>Stock</label><input type="number" placeholder="0" value={form.stock} onChange={e => setForm(f => ({ ...f, stock: e.target.value }))} style={{ width: "100%" }} /></div>
-          <div><label style={lbl}>Stock mínimo</label><input type="number" placeholder="0" value={form.minStock} onChange={e => setForm(f => ({ ...f, minStock: e.target.value }))} style={{ width: "100%" }} /></div>
+          <div><label style={lbl}>Stock mínimo</label><input type="number" placeholder={`Por defecto: ${defaultMin}`} value={form.minStock} onChange={e => setForm(f => ({ ...f, minStock: e.target.value }))} style={{ width: "100%" }} /></div>
           <div><label style={lbl}>Costo unitario</label><input type="number" placeholder="0" value={form.cost} onChange={e => setForm(f => ({ ...f, cost: e.target.value }))} style={{ width: "100%" }} /></div>
           <div><label style={lbl}>Precio de venta</label><input type="number" placeholder="0" value={form.price} onChange={e => setForm(f => ({ ...f, price: e.target.value }))} style={{ width: "100%" }} /></div>
         </div>
@@ -1581,7 +1587,7 @@ const sanitizeField = (field, val) =>
   NUMERIC_FIELDS.includes(field) ? Math.max(0, (field === "stock" || field === "minStock" ? parseInt(val) : parseFloat(val)) || 0) : String(val ?? "");
 const showVal = (field, v) => MONEY_FIELDS.has(field) ? fmt(v) : String(v);
 
-function Asistente({ parts, setParts, showToast }) {
+function Asistente({ parts, setParts, showToast, defaultMin = 0 }) {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState(null);
@@ -1693,7 +1699,7 @@ function Asistente({ parts, setParts, showToast }) {
     setParts(prev => {
       let next = [...prev];
       for (const it of items) {
-        if (it.op === "create") { next.unshift({ id: uid(), sku: "", minStock: 0, ...it.fields }); created++; }
+        if (it.op === "create") { next.unshift({ id: uid(), sku: "", minStock: defaultMin, ...it.fields }); created++; }
         else if (it.op === "delete") { next = next.filter(p => p.id !== it.target.id); deleted++; }
         else if (it.op === "restock") { next = next.map(p => p.id === it.target.id ? { ...p, stock: (Number(p.stock) || 0) + (Number(it.add) || 0), ...it.extra } : p); restocked++; }
         else if (it.op === "update") { next = next.map(p => p.id === it.target.id ? { ...p, ...it.set } : p); updated++; }
@@ -1935,8 +1941,9 @@ function ReorderModal({ alerts, org, onClose }) {
 }
 
 /* ---------- Ajustes del negocio (editable por el dueño) ---------- */
-function ShopSettings({ org, saveOrg, onClose, showToast }) {
-  const [form, setForm] = useState({ name: org.name, logo: org.logo || "", accent: org.accent || DEFAULT_ACCENT });
+function ShopSettings({ org, saveOrg, onClose, showToast, applyMinToZero }) {
+  const [form, setForm] = useState({ name: org.name, logo: org.logo || "", accent: org.accent || DEFAULT_ACCENT, defaultMin: org.defaultMin || 0 });
+  const [applyZero, setApplyZero] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const accent = form.accent || DEFAULT_ACCENT;
@@ -1945,7 +1952,9 @@ function ShopSettings({ org, saveOrg, onClose, showToast }) {
     if (!form.name.trim()) return setErr("Ponle un nombre al negocio");
     setBusy(true); setErr(null);
     try {
-      await saveOrg({ name: form.name.trim(), logo: form.logo, accent });
+      const defaultMin = Math.max(0, parseInt(form.defaultMin) || 0);
+      await saveOrg({ name: form.name.trim(), logo: form.logo, accent, defaultMin });
+      if (applyZero && applyMinToZero) applyMinToZero(defaultMin);
       showToast("Negocio actualizado");
       onClose();
     } catch (e) { setErr(e.message || "No se pudo guardar"); }
@@ -1983,6 +1992,21 @@ function ShopSettings({ org, saveOrg, onClose, showToast }) {
             </div>
           </div>
         </div>
+
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #20283480" }}>
+          <label style={lbl}>Stock mínimo por defecto</label>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <input type="number" min={0} value={form.defaultMin} onChange={e => setForm(f => ({ ...f, defaultMin: e.target.value }))} style={{ width: 90 }} />
+            <span style={{ fontSize: 11, color: "#8a93a3", flex: 1, minWidth: 180 }}>
+              Se usa cuando agregas piezas por <b>IA</b> o <b>CSV</b> sin indicar mínimo (avisa cuando el stock llega a este número).
+            </span>
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 12, color: "#c4ccd8", cursor: "pointer" }}>
+            <input type="checkbox" checked={applyZero} onChange={e => setApplyZero(e.target.checked)} style={{ width: 15, height: 15 }} />
+            Aplicarlo también a las piezas que hoy están en mínimo 0
+          </label>
+        </div>
+
         {err && <div style={{ color: "#e25c5c", fontSize: 12, marginTop: 10 }}>{err}</div>}
         <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
           <button onClick={save} disabled={busy} style={{ ...btnGold, flex: 1, justifyContent: "center" }}>
