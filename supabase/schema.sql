@@ -95,6 +95,15 @@ returns boolean language sql stable security definer set search_path = public as
   );
 $$;
 
+-- ¿el usuario es DUEÑO (role owner) de esta organización?
+create or replace function public.is_owner(target uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists(
+    select 1 from public.memberships
+    where org_id = target and user_id = auth.uid() and role = 'owner'
+  );
+$$;
+
 -- ---------- Crear el profile automáticamente al registrarse ----------------
 
 create or replace function public.handle_new_user()
@@ -129,6 +138,10 @@ create policy org_select on public.organizations for select
 drop policy if exists org_admin_write on public.organizations;
 create policy org_admin_write on public.organizations for all
   using (public.is_admin()) with check (public.is_admin());
+-- el DUEÑO puede editar (nombre, logo, color) su propia refaccionaria
+drop policy if exists org_owner_update on public.organizations;
+create policy org_owner_update on public.organizations for update
+  using (public.is_owner(id)) with check (public.is_owner(id));
 
 -- profiles: cada quien ve el suyo; el admin ve todos (para asignar usuarios)
 drop policy if exists profiles_select on public.profiles;

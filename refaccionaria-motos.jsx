@@ -628,7 +628,8 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
   );
 }
 
-function ShopApp({ org, onExit, isAdmin }) {
+function ShopApp({ org: orgProp, onExit, isAdmin }) {
+  const [org, setOrg] = useState(orgProp);
   const K = (k) => `refa:org:${org.id}:${k}`;
   const accent = org.accent || "#d4af37";
   const [tab, setTab] = useState("tablero");
@@ -639,6 +640,13 @@ function ShopApp({ org, onExit, isAdmin }) {
   const [toast, setToast] = useState(null);
   const [shop, setShop] = useState({ name: org.name, phone: "", address: "", footer: "¡Gracias por su compra!" });
   const [ticketSale, setTicketSale] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+
+  const saveOrg = async (patch) => {
+    const updated = { ...org, ...patch };
+    await db.update("organizations", org.id, orgToDb(updated));
+    setOrg(updated);
+  };
 
   // Snapshots de lo último sincronizado a Supabase (para hacer diff)
   const partsSnap = useRef(new Map());
@@ -735,6 +743,9 @@ function ShopApp({ org, onExit, isAdmin }) {
             <MiniStat label="Valor inventario" value={fmt0(inventoryValue)} color="#3fa9f5" />
             <MiniStat label="Utilidad del mes" value={fmt0(monthNet)} color={monthNet >= 0 ? "#2ecc71" : "#e25c5c"} />
             {lowStock.length > 0 && <MiniStat label="Bajo mínimo" value={`${lowStock.length} pza`} color="#e8a13a" />}
+            <button onClick={() => setShowSettings(true)} style={{ ...btnGhost, padding: "8px 12px" }} title="Editar nombre, logo y color del negocio">
+              <Pencil size={15} /> Negocio
+            </button>
             <button onClick={onExit} style={{ ...btnGhost, padding: "8px 12px" }} title={isAdmin ? "Volver al panel de administrador" : "Cerrar sesión"}>
               <LogOut size={15} /> {isAdmin ? "Panel" : "Salir"}
             </button>
@@ -790,6 +801,10 @@ function ShopApp({ org, onExit, isAdmin }) {
 
       {ticketSale && (
         <TicketModal sale={ticketSale} shop={shop} setShop={setShop} logo={org.logo} onClose={() => setTicketSale(null)} />
+      )}
+
+      {showSettings && (
+        <ShopSettings org={org} saveOrg={saveOrg} onClose={() => setShowSettings(false)} showToast={showToast} />
       )}
 
       {toast && (
@@ -1768,6 +1783,67 @@ function OpBadge({ op }) {
 }
 
 /* ---------- Ticket imprimible ---------- */
+/* ---------- Ajustes del negocio (editable por el dueño) ---------- */
+function ShopSettings({ org, saveOrg, onClose, showToast }) {
+  const [form, setForm] = useState({ name: org.name, logo: org.logo || "", accent: org.accent || DEFAULT_ACCENT });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const accent = form.accent || DEFAULT_ACCENT;
+
+  const save = async () => {
+    if (!form.name.trim()) return setErr("Ponle un nombre al negocio");
+    setBusy(true); setErr(null);
+    try {
+      await saveOrg({ name: form.name.trim(), logo: form.logo, accent });
+      showToast("Negocio actualizado");
+      onClose();
+    } catch (e) { setErr(e.message || "No se pudo guardar"); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="no-print" onClick={onClose} style={{ position: "fixed", inset: 0, background: "#000a", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 24, overflowY: "auto", zIndex: 60 }}>
+      <div onClick={e => e.stopPropagation()} style={{ width: 460, maxWidth: "100%", background: "#161d29", border: "1px solid #29323f", borderRadius: 14, padding: 18 }}>
+        <SectionTitle icon={Pencil}>Editar mi negocio</SectionTitle>
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+          <div style={{ textAlign: "center" }}>
+            <label style={{ cursor: "pointer", display: "block" }}>
+              <div style={{ width: 90, height: 90, borderRadius: 14, border: "1px dashed #3a4452", background: "#0c1118", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                {form.logo
+                  ? <img src={form.logo} alt="logo" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  : <div style={{ textAlign: "center", color: "#5a6372" }}><ImagePlus size={20} /><div style={{ fontSize: 10, marginTop: 4 }}>Subir logo</div></div>}
+              </div>
+              <input type="file" accept="image/*" hidden onChange={e => e.target.files[0] && fileToLogo(e.target.files[0], d => setForm(f => ({ ...f, logo: d })))} />
+            </label>
+            {form.logo && <button onClick={() => setForm(f => ({ ...f, logo: "" }))} style={{ ...btnGhost, padding: "4px 10px", fontSize: 11, marginTop: 6 }}>Quitar</button>}
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={lbl}>Nombre del negocio</label>
+            <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} style={{ width: "100%", marginBottom: 12 }} />
+            <label style={lbl}>Color de la marca</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <input type="color" value={accent} onChange={e => setForm(f => ({ ...f, accent: e.target.value }))} style={{ width: 44, height: 36, padding: 2, cursor: "pointer" }} />
+              <div style={{ display: "flex", gap: 6 }}>
+                {ACCENT_PRESETS.map(c => (
+                  <button key={c} onClick={() => setForm(f => ({ ...f, accent: c }))} title={c}
+                    style={{ width: 22, height: 22, borderRadius: 6, background: c, border: accent.toLowerCase() === c.toLowerCase() ? "2px solid #fff" : "1px solid #29323f" }} />
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+        {err && <div style={{ color: "#e25c5c", fontSize: 12, marginTop: 10 }}>{err}</div>}
+        <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+          <button onClick={save} disabled={busy} style={{ ...btnGold, flex: 1, justifyContent: "center" }}>
+            {busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />} Guardar cambios
+          </button>
+          <button onClick={onClose} style={{ ...btnGhost, flex: 1, justifyContent: "center" }}><X size={15} /> Cancelar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TicketModal({ sale, shop, setShop, logo, onClose }) {
   const [editing, setEditing] = useState(false);
   const units = sale.items.reduce((a, i) => a + i.qty, 0);
