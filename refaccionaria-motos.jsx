@@ -28,6 +28,18 @@ const store = {
   set: async (k, v) => { try { if (v === "" || v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} },
 };
 
+// Favicon (ícono de la pestaña): engranaje dorado por defecto (admin/login),
+// y el logo del negocio cuando se entra a una refaccionaria.
+const GEAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#0c1118"/><g transform="translate(8,8) scale(2)" fill="none" stroke="#d4af37" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></g></svg>`;
+const DEFAULT_FAVICON = `data:image/svg+xml,${encodeURIComponent(GEAR_SVG)}`;
+function setFavicon(href) {
+  try {
+    let link = document.querySelector("link[rel~='icon']");
+    if (!link) { link = document.createElement("link"); link.rel = "icon"; document.head.appendChild(link); }
+    link.setAttribute("href", href || DEFAULT_FAVICON);
+  } catch (e) {}
+}
+
 const DEFAULT_ACCENT = "#d4af37";
 const ACCENT_PRESETS = ["#d4af37", "#e2574c", "#2ecc71", "#3fa9f5", "#9b59b6", "#e8852b", "#1abc9c", "#ec4899"];
 
@@ -672,6 +684,12 @@ function ShopApp({ org, onExit, isAdmin }) {
 
   // La config del ticket (nombre/teléfono/dirección) se guarda local por org (cosmético)
   useEffect(() => { if (loaded) store.set(K("shop"), JSON.stringify(shop)).catch(() => {}); }, [shop, loaded]);
+
+  // El ícono de la pestaña muestra el logo del negocio (o el engranaje si no tiene logo)
+  useEffect(() => {
+    setFavicon(org.logo || DEFAULT_FAVICON);
+    return () => setFavicon(DEFAULT_FAVICON);
+  }, [org.logo]);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2400); };
 
