@@ -158,6 +158,29 @@ async function syncTable(table, appRows, snapMap, toDb) {
   for (const [id, row] of curMap) snapMap.set(id, JSON.stringify(row));
 }
 
+// Extrae texto de un archivo para mandárselo a la IA.
+// PDF: usa pdfjs (carga diferida). CSV/XML/TXT: texto plano.
+async function extractTextFromFile(file) {
+  const name = (file.name || "").toLowerCase();
+  const isPdf = name.endsWith(".pdf") || file.type === "application/pdf";
+  if (isPdf) {
+    const pdfjs = await import("pdfjs-dist");
+    const worker = await import("pdfjs-dist/build/pdf.worker.min.mjs?url");
+    pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
+    const data = await file.arrayBuffer();
+    const doc = await pdfjs.getDocument({ data }).promise;
+    let out = "";
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const tc = await page.getTextContent();
+      out += tc.items.map(it => it.str).join(" ") + "\n";
+      if (out.length > 30000) break;
+    }
+    return out;
+  }
+  return await file.text();
+}
+
 function GlobalStyles() {
   return (
     <style>{`
@@ -1471,9 +1494,31 @@ function Asistente({ parts, setParts, showToast }) {
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState(null);
+  const [fileBusy, setFileBusy] = useState(false);
 
-  const ask = async () => {
-    if (!text.trim()) return;
+  const importFile = async (file) => {
+    if (!file) return;
+    setError(null); setPreview(null); setFileBusy(true);
+    try {
+      let content = (await extractTextFromFile(file) || "").trim();
+      if (!content) {
+        setError("No pude leer texto del archivo. Si es un PDF escaneado (imagen), no contiene texto.");
+        return;
+      }
+      if (content.length > 24000) content = content.slice(0, 24000);
+      const instruction = `Da de alta en el inventario las refacciones de este documento (puede ser una factura del proveedor, una lista, o un XML CFDI del SAT). Por cada concepto o renglón: usa la descripción como "name", la cantidad como "stock", y el valor/precio unitario como "cost". Si no hay precio de venta, estima "price" como el costo más 40%. Ignora subtotales, impuestos (IVA), totales y datos del emisor/receptor. Documento:\n\n${content}`;
+      setText(`📄 Archivo: ${file.name}`);
+      await ask(instruction);
+    } catch (e) {
+      setError("No pude procesar el archivo. Prueba con CSV, XML o un PDF con texto.");
+    } finally {
+      setFileBusy(false);
+    }
+  };
+
+  const ask = async (override) => {
+    const instruction = typeof override === "string" ? override : text;
+    if (!instruction.trim()) return;
     setLoading(true); setError(null); setPreview(null);
     // Snapshot del inventario con un 'ref' para que la IA pueda apuntar a piezas existentes
     const refList = parts.map((p, i) => ({
@@ -1485,7 +1530,7 @@ function Asistente({ parts, setParts, showToast }) {
       const response = await fetch("/api/ai", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${_session?.access_token || ""}` },
-        body: JSON.stringify({ system: SYSTEM, user: `INVENTARIO ACTUAL:\n${JSON.stringify(refList)}\n\nINSTRUCCIÓN:\n${text}` }),
+        body: JSON.stringify({ system: SYSTEM, user: `INVENTARIO ACTUAL:\n${JSON.stringify(refList)}\n\nINSTRUCCIÓN:\n${instruction}` }),
       });
       const data = await response.json();
       if (!response.ok) { setError(data.error || "No se pudo procesar. Revisa que la IA esté configurada en Vercel."); return; }
@@ -1595,10 +1640,22 @@ function Asistente({ parts, setParts, showToast }) {
           rows={4}
           style={{ width: "100%", resize: "vertical", fontFamily: "inherit", marginBottom: 10 }}
         />
-        <button onClick={ask} disabled={loading || !text.trim()} style={{ ...btnGold, background: loading ? "#29323f" : "var(--accent)", color: loading ? "#8a93a3" : "#0c1118" }}>
-          {loading ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />}
-          {loading ? "Pensando…" : "Pedir a la IA"}
-        </button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <button onClick={() => ask()} disabled={loading || fileBusy || !text.trim()} style={{ ...btnGold, background: (loading || fileBusy) ? "#29323f" : "var(--accent)", color: (loading || fileBusy) ? "#8a93a3" : "#0c1118" }}>
+            {loading ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />}
+            {loading ? "Pensando…" : "Pedir a la IA"}
+          </button>
+          <span style={{ fontSize: 12, color: "#5a6372" }}>o</span>
+          <label style={{ ...btnGhost, cursor: (loading || fileBusy) ? "default" : "pointer", opacity: (loading || fileBusy) ? 0.6 : 1 }} title="Sube una factura, lista CSV, XML del SAT (CFDI) o PDF">
+            {fileBusy ? <Loader2 size={15} className="spin" /> : <Upload size={15} />}
+            {fileBusy ? "Leyendo archivo…" : "Importar factura / CSV / XML / PDF"}
+            <input type="file" accept=".csv,.xml,.pdf,.txt,text/csv,text/xml,application/xml,application/pdf,text/plain" hidden disabled={loading || fileBusy}
+              onChange={e => { const f = e.target.files[0]; e.target.value = ""; if (f) importFile(f); }} />
+          </label>
+        </div>
+        <div style={{ fontSize: 11, color: "#5a6372", marginTop: 8 }}>
+          El importador lee facturas de proveedor (incluyendo XML CFDI del SAT), listas CSV y PDFs con texto, y saca las refacciones para que las revises.
+        </div>
         {error && <div style={{ color: "#e25c5c", fontSize: 12, marginTop: 10 }}>{error}</div>}
       </Card>
 
