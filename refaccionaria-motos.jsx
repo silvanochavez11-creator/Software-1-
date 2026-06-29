@@ -7,7 +7,7 @@ import Papa from "papaparse";
 import {
   Plus, Upload, TrendingUp, Wallet, Package, Trash2, Sparkles, Check, X, Loader2,
   AlertTriangle, ShoppingCart, Search, Pencil, Boxes, DollarSign, Receipt, BarChart3, Printer,
-  LogOut, Store, ImagePlus, Shield, ArrowRight, LogIn, UserPlus, Users, Mail, Lock
+  LogOut, Store, ImagePlus, Shield, ArrowRight, LogIn, UserPlus, Users, Mail, Lock, Bell, ClipboardList
 } from "lucide-react";
 
 const fmt = (n) =>
@@ -20,6 +20,28 @@ const EXPENSE_CATS = ["Compra a proveedor", "Renta", "Servicios (luz/agua/intern
 
 const uid = () => crypto.randomUUID();
 const todayStr = () => new Date().toISOString().slice(0, 10);
+
+// Nivel de existencias de una pieza, para los avisos
+const stockStatus = (p) => {
+  const s = Number(p.stock) || 0, m = Number(p.minStock) || 0;
+  if (s <= 0) return "agotado";
+  if (s <= m) return "critico";
+  if (s <= m + 3) return "porAgotarse";
+  return "ok";
+};
+const STATUS_META = {
+  agotado: { label: "Agotado", color: "#e25c5c", rank: 0 },
+  critico: { label: "Crítico", color: "#e8a13a", rank: 1 },
+  porAgotarse: { label: "Por agotarse", color: "#e8c468", rank: 2 },
+  ok: { label: "Disponible", color: "#2ecc71", rank: 3 },
+};
+// Cuántas piezas sugerir comprar para volver a un colchón sano
+const suggestQty = (p) => {
+  const s = Number(p.stock) || 0, m = Number(p.minStock) || 0;
+  const target = Math.max(m * 2, m + 2, 3);
+  return Math.max(0, target - s);
+};
+const escapeHtml = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 // Almacenamiento local del navegador (sesión y config del ticket).
 // Misma interfaz async que usaba store, pero sobre localStorage real.
@@ -641,6 +663,8 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
   const [shop, setShop] = useState({ name: org.name, phone: "", address: "", footer: "¡Gracias por su compra!" });
   const [ticketSale, setTicketSale] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showAlerts, setShowAlerts] = useState(false);
+  const [showReorder, setShowReorder] = useState(false);
 
   const saveOrg = async (patch) => {
     const updated = { ...org, ...patch };
@@ -714,6 +738,13 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
     () => parts.filter(p => (Number(p.stock) || 0) <= (Number(p.minStock) || 0)),
     [parts]
   );
+  const alerts = useMemo(
+    () => parts.map(p => ({ ...p, status: stockStatus(p) }))
+      .filter(p => p.status !== "ok")
+      .sort((a, b) => STATUS_META[a.status].rank - STATUS_META[b.status].rank || (Number(a.stock) || 0) - (Number(b.stock) || 0)),
+    [parts]
+  );
+  const urgentCount = useMemo(() => alerts.filter(a => a.status === "agotado" || a.status === "critico").length, [alerts]);
 
   const thisMonth = todayStr().slice(0, 7);
   const monthSales = useMemo(() => sales.filter(s => s.date.slice(0, 7) === thisMonth), [sales, thisMonth]);
@@ -743,6 +774,19 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
             <MiniStat label="Valor inventario" value={fmt0(inventoryValue)} color="#3fa9f5" />
             <MiniStat label="Utilidad del mes" value={fmt0(monthNet)} color={monthNet >= 0 ? "#2ecc71" : "#e25c5c"} />
             {lowStock.length > 0 && <MiniStat label="Bajo mínimo" value={`${lowStock.length} pza`} color="#e8a13a" />}
+            <div style={{ position: "relative" }}>
+              <button onClick={() => setShowAlerts(v => !v)} style={{ ...btnGhost, padding: "8px 10px", position: "relative" }} title="Alertas de inventario">
+                <Bell size={16} />
+                {urgentCount > 0 && (
+                  <span style={{ position: "absolute", top: -5, right: -5, background: "#e25c5c", color: "#fff", fontSize: 10, fontWeight: 700, borderRadius: 10, minWidth: 17, height: 17, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>{urgentCount}</span>
+                )}
+              </button>
+              {showAlerts && (
+                <AlertsPanel alerts={alerts} onClose={() => setShowAlerts(false)}
+                  onReorder={() => { setShowAlerts(false); setShowReorder(true); }}
+                  onGoInventory={() => { setShowAlerts(false); setTab("inventario"); }} />
+              )}
+            </div>
             <button onClick={() => setShowSettings(true)} style={{ ...btnGhost, padding: "8px 12px" }} title="Editar nombre, logo y color del negocio">
               <Pencil size={15} /> Negocio
             </button>
@@ -805,6 +849,10 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
 
       {showSettings && (
         <ShopSettings org={org} saveOrg={saveOrg} onClose={() => setShowSettings(false)} showToast={showToast} />
+      )}
+
+      {showReorder && (
+        <ReorderModal alerts={alerts} org={org} onClose={() => setShowReorder(false)} />
       )}
 
       {toast && (
@@ -1184,7 +1232,9 @@ function Inventario({ parts, setParts, showToast }) {
               </thead>
               <tbody>
                 {filtered.map(p => {
-                  const low = (Number(p.stock) || 0) <= (Number(p.minStock) || 0);
+                  const status = stockStatus(p);
+                  const low = status !== "ok";
+                  const stColor = STATUS_META[status].color;
                   return (
                     <tr key={p.id}>
                       <td>
@@ -1196,10 +1246,10 @@ function Inventario({ parts, setParts, showToast }) {
                       <td style={{ textAlign: "right" }}>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}>
                           <button onClick={() => adjustStock(p.id, -1)} style={stepBtn}>−</button>
-                          <span style={{ fontWeight: 700, minWidth: 28, textAlign: "center", color: low ? "#e8a13a" : "#e9ecf1" }}>{p.stock}</span>
+                          <span style={{ fontWeight: 700, minWidth: 28, textAlign: "center", color: low ? stColor : "#e9ecf1" }}>{p.stock}</span>
                           <button onClick={() => adjustStock(p.id, +1)} style={stepBtn}>+</button>
                         </div>
-                        {low && <div style={{ fontSize: 10, color: "#e8a13a" }}>mín {p.minStock}</div>}
+                        {low && <div style={{ fontSize: 10, color: stColor }}>{STATUS_META[status].label} · mín {p.minStock}</div>}
                       </td>
                       <td style={{ textAlign: "right", color: "#8a93a3" }}>{fmt(p.cost)}</td>
                       <td style={{ textAlign: "right", fontWeight: 600 }}>{fmt(p.price)}</td>
@@ -1277,7 +1327,16 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
       return line ? { ...p, stock: Math.max(0, (Number(p.stock) || 0) - line.qty) } : p;
     }));
     setCart([]); setCustomer("");
-    showToast(`Venta #${nextFolio} registrada: ${fmt(total)} (utilidad ${fmt(profit)})`);
+    // Aviso si alguna pieza quedó en su mínimo (o agotada) tras esta venta
+    const lowAfter = [];
+    for (const i of cart) {
+      const p = parts.find(p => p.id === i.partId);
+      if (!p) continue;
+      const after = (Number(p.stock) || 0) - i.qty;
+      if (after <= (Number(p.minStock) || 0)) lowAfter.push(`${p.name} (${after})`);
+    }
+    const warn = lowAfter.length ? ` · ⚠️ En mínimo: ${lowAfter.slice(0, 2).join(", ")}${lowAfter.length > 2 ? ` +${lowAfter.length - 2}` : ""}` : "";
+    showToast(`Venta #${nextFolio} registrada: ${fmt(total)} (utilidad ${fmt(profit)})${warn}`);
     onTicket && onTicket(sale);
   };
 
@@ -1783,6 +1842,98 @@ function OpBadge({ op }) {
 }
 
 /* ---------- Ticket imprimible ---------- */
+/* ---------- Panel de alertas (campana) ---------- */
+function AlertsPanel({ alerts, onClose, onReorder, onGoInventory }) {
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 58 }} />
+      <div style={{ position: "absolute", right: 0, top: "calc(100% + 8px)", width: 340, maxWidth: "92vw", background: "#161d29", border: "1px solid #29323f", borderRadius: 12, boxShadow: "0 12px 30px #0008", zIndex: 59 }}>
+        <div style={{ padding: "12px 14px", borderBottom: "1px solid #29323f", display: "flex", alignItems: "center", gap: 8 }}>
+          <Bell size={15} color="var(--accent)" />
+          <span className="sg" style={{ fontSize: 13, fontWeight: 700 }}>Alertas de inventario</span>
+          <span style={{ flex: 1 }} />
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#8a93a3" }}><X size={15} /></button>
+        </div>
+        <div style={{ maxHeight: 320, overflowY: "auto", padding: "4px 0" }}>
+          {alerts.length === 0 ? (
+            <div style={{ padding: 22, textAlign: "center", color: "#8a93a3", fontSize: 13 }}>Todo en orden ✅<div style={{ fontSize: 11, color: "#5a6372", marginTop: 4 }}>Ninguna pieza por agotarse.</div></div>
+          ) : alerts.map(p => {
+            const m = STATUS_META[p.status];
+            return (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px" }}>
+                <span style={{ width: 8, height: 8, borderRadius: 8, background: m.color, flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}{p.compat ? ` · ${p.compat}` : ""}</div>
+                  <div style={{ fontSize: 11, color: m.color, fontWeight: 600 }}>{m.label} — {p.stock} en stock (mín {p.minStock})</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 8, padding: 10, borderTop: "1px solid #29323f" }}>
+          <button onClick={onReorder} style={{ ...btnGold, flex: 1, justifyContent: "center", padding: "8px 0" }}><ClipboardList size={15} /> Lista de reorden</button>
+          <button onClick={onGoInventory} style={{ ...btnGhost, padding: "8px 12px" }}>Inventario</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ---------- Lista de reorden (imprimible / exportable) ---------- */
+function ReorderModal({ alerts, org, onClose }) {
+  const rows = alerts.map(p => ({ ...p, pedir: suggestQty(p) }));
+  const exportCSV = () => {
+    const csv = Papa.unparse(rows.map(p => ({ nombre: p.name, marca: p.brand, compatibilidad: p.compat, estado: STATUS_META[p.status].label, stock: p.stock, minimo: p.minStock, sugerido_pedir: p.pedir })));
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = "lista-reorden.csv"; a.click(); URL.revokeObjectURL(url);
+  };
+  const printList = () => {
+    const w = window.open("", "_blank");
+    if (!w) return;
+    const rowsHtml = rows.map(p => `<tr><td>${escapeHtml(p.name)}${p.compat ? " · " + escapeHtml(p.compat) : ""}</td><td>${escapeHtml(STATUS_META[p.status].label)}</td><td style="text-align:right">${p.stock}</td><td style="text-align:right">${p.minStock}</td><td style="text-align:right"><b>${p.pedir}</b></td></tr>`).join("");
+    w.document.write(`<html><head><title>Lista de reorden</title><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;padding:24px;color:#111}h1{font-size:18px;margin:0 0 2px}.sub{color:#666;font-size:12px;margin-bottom:16px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border-bottom:1px solid #ddd;padding:8px;text-align:left}th{background:#f3f3f3}</style></head><body><h1>Lista de reorden — ${escapeHtml(org.name)}</h1><div class="sub">Generada el ${todayStr()}</div><table><thead><tr><th>Refacción</th><th>Estado</th><th>Stock</th><th>Mínimo</th><th>Pedir</th></tr></thead><tbody>${rowsHtml}</tbody></table></body></html>`);
+    w.document.close(); w.focus(); setTimeout(() => w.print(), 300);
+  };
+  return (
+    <div className="no-print" onClick={onClose} style={{ position: "fixed", inset: 0, background: "#000a", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 24, overflowY: "auto", zIndex: 61 }}>
+      <div onClick={e => e.stopPropagation()} style={{ width: 620, maxWidth: "100%", background: "#161d29", border: "1px solid #29323f", borderRadius: 14, padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <ClipboardList size={18} color="var(--accent)" />
+          <span className="sg" style={{ fontSize: 16, fontWeight: 700 }}>Lista de reorden</span>
+          <span style={{ flex: 1 }} />
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#8a93a3" }}><X size={16} /></button>
+        </div>
+        <div style={{ fontSize: 12, color: "#8a93a3", marginBottom: 12 }}>Piezas por reabastecer y cuánto te sugiero pedir para tener colchón.</div>
+        {rows.length === 0 ? <EmptyState text="No hay piezas por reabastecer. ✅" /> : (
+          <div style={{ overflowX: "auto" }}>
+            <table>
+              <thead><tr><th>Refacción</th><th>Estado</th><th style={{ textAlign: "right" }}>Stock</th><th style={{ textAlign: "right" }}>Mínimo</th><th style={{ textAlign: "right" }}>Pedir</th></tr></thead>
+              <tbody>
+                {rows.map(p => (
+                  <tr key={p.id}>
+                    <td><div style={{ fontWeight: 600 }}>{p.name}</div><div style={{ fontSize: 11, color: "#5a6372" }}>{[p.brand, p.compat].filter(Boolean).join(" · ") || "—"}</div></td>
+                    <td><span style={{ fontSize: 11, fontWeight: 700, color: STATUS_META[p.status].color }}>{STATUS_META[p.status].label}</span></td>
+                    <td style={{ textAlign: "right" }}>{p.stock}</td>
+                    <td style={{ textAlign: "right", color: "#8a93a3" }}>{p.minStock}</td>
+                    <td style={{ textAlign: "right", fontWeight: 700, color: "var(--accent)" }}>{p.pedir}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {rows.length > 0 && (
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <button onClick={printList} style={btnGold}><Printer size={15} /> Imprimir</button>
+            <button onClick={exportCSV} style={btnGhost}><Upload size={15} style={{ transform: "rotate(180deg)" }} /> Exportar CSV</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Ajustes del negocio (editable por el dueño) ---------- */
 function ShopSettings({ org, saveOrg, onClose, showToast }) {
   const [form, setForm] = useState({ name: org.name, logo: org.logo || "", accent: org.accent || DEFAULT_ACCENT });
