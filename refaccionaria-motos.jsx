@@ -199,7 +199,7 @@ const db = {
 };
 
 /* ---- Mapeo entre la forma de la app (camelCase) y las columnas de la BD ---- */
-const orgFromDb = (r) => ({ id: r.id, name: r.name, logo: r.logo_url || "", accent: r.accent || DEFAULT_ACCENT, defaultMin: Number(r.default_min_stock) || 0, createdAt: (r.created_at || "").slice(0, 10) });
+const orgFromDb = (r) => ({ id: r.id, name: r.name, logo: r.logo_url || "", accent: r.accent || DEFAULT_ACCENT, defaultMin: Number(r.default_min_stock) || 0, status: r.status || "active", createdAt: (r.created_at || "").slice(0, 10) });
 const orgToDb = (o) => { const r = { name: o.name, logo_url: o.logo || null, accent: o.accent || DEFAULT_ACCENT }; if (o.defaultMin != null) r.default_min_stock = Number(o.defaultMin) || 0; return r; };
 
 const partFromDb = (r) => ({ id: r.id, sku: r.sku || "", name: r.name, brand: r.brand || "", category: r.category || "Otro", compat: r.compat || "", stock: Number(r.stock) || 0, minStock: Number(r.min_stock) || 0, cost: Number(r.cost) || 0, price: Number(r.price) || 0 });
@@ -333,10 +333,15 @@ export default function RefaccionariaSaaS() {
     body = <AdminPanel orgs={orgs} reload={loadMe} onEnter={(id) => { setActiveOrgId(id); setScreen("shop"); }} onSignOut={doSignOut} adminEmail={session.user?.email} />;
   } else if (orgs.length === 0) {
     body = <NoOrgScreen email={session.user?.email} onSignOut={doSignOut} onRetry={loadMe} />;
-  } else if (orgs.length === 1) {
-    body = <ShopApp key={orgs[0].id} org={orgs[0]} onExit={doSignOut} isAdmin={false} />;
   } else {
-    body = <OrgChooser orgs={orgs} onPick={(id) => { setActiveOrgId(id); setScreen("shop"); }} onSignOut={doSignOut} />;
+    const accessible = orgs.filter(o => o.status !== "suspended");
+    if (accessible.length === 0) {
+      body = <SuspendedScreen onSignOut={doSignOut} onRetry={loadMe} />;
+    } else if (accessible.length === 1) {
+      body = <ShopApp key={accessible[0].id} org={accessible[0]} onExit={doSignOut} isAdmin={false} />;
+    } else {
+      body = <OrgChooser orgs={accessible} onPick={(id) => { setActiveOrgId(id); setScreen("shop"); }} onSignOut={doSignOut} />;
+    }
   }
   return <><GlobalStyles />{body}</>;
 }
@@ -509,6 +514,26 @@ function NoOrgScreen({ email, onSignOut, onRetry }) {
   );
 }
 
+function SuspendedScreen({ onSignOut, onRetry }) {
+  return (
+    <ScreenShell>
+      <div style={{ width: 420, maxWidth: "100%", textAlign: "center" }}>
+        <div style={{ width: 56, height: 56, borderRadius: 14, background: "#e25c5c22", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 12 }}>
+          <Lock size={28} color="#e25c5c" />
+        </div>
+        <div className="sg" style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Refaccionaria suspendida</div>
+        <div style={{ fontSize: 13, color: "#8a93a3", marginBottom: 20, lineHeight: 1.6 }}>
+          Tu refaccionaria está temporalmente suspendida. Contacta al administrador de la plataforma para reactivarla.
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+          <button onClick={onRetry} style={btnGhost}><ArrowRight size={15} /> Reintentar</button>
+          <button onClick={onSignOut} style={btnGhost}><LogOut size={15} /> Salir</button>
+        </div>
+      </div>
+    </ScreenShell>
+  );
+}
+
 function OrgChooser({ orgs, onPick, onSignOut }) {
   return (
     <ScreenShell>
@@ -542,6 +567,8 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
   const [err, setErr] = useState(null);
   const [users, setUsers] = useState([]);
   const [memberships, setMemberships] = useState([]);
+  const [stats, setStats] = useState({});
+  const [q, setQ] = useState("");
 
   const accent = form.accent || DEFAULT_ACCENT;
 
@@ -554,7 +581,40 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
       setUsers(us || []); setMemberships(ms || []);
     } catch (e) {}
   };
-  useEffect(() => { loadUsers(); }, []);
+  const loadStats = async () => {
+    try {
+      const monthStart = todayStr().slice(0, 7) + "-01";
+      const [pp, ss] = await Promise.all([
+        db.select("parts", "select=org_id,stock,min_stock,cost"),
+        db.select("sales", `select=org_id,total&sold_at=gte.${monthStart}`),
+      ]);
+      const map = {};
+      const ensure = (id) => (map[id] = map[id] || { parts: 0, value: 0, low: 0, salesMonth: 0 });
+      for (const p of (pp || [])) {
+        const m = ensure(p.org_id);
+        const stock = Number(p.stock) || 0, min = Number(p.min_stock) || 0;
+        m.parts += 1; m.value += stock * (Number(p.cost) || 0);
+        if (stock <= min) m.low += 1;
+      }
+      for (const s of (ss || [])) ensure(s.org_id).salesMonth += Number(s.total) || 0;
+      setStats(map);
+    } catch (e) {}
+  };
+  useEffect(() => { loadUsers(); loadStats(); }, []);
+
+  const toggleStatus = async (o) => {
+    setErr(null);
+    try { await db.update("organizations", o.id, { status: o.status === "suspended" ? "active" : "suspended" }); await reload(); }
+    catch (e) { setErr(e.message || "No se pudo cambiar el estado"); }
+  };
+
+  const filteredOrgs = orgs.filter(o => o.name.toLowerCase().includes(q.trim().toLowerCase()));
+  const totals = orgs.reduce((acc, o) => {
+    const s = stats[o.id] || {};
+    acc.value += s.value || 0; acc.salesMonth += s.salesMonth || 0; acc.low += s.low || 0;
+    if (o.status !== "suspended") acc.active += 1;
+    return acc;
+  }, { value: 0, salesMonth: 0, low: 0, active: 0 });
 
   const save = async () => {
     if (!form.name.trim()) return;
@@ -663,35 +723,73 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
           </div>
         </Card>
 
+        {/* Tablero global */}
+        {orgs.length > 0 && (
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
+            <StatCard label="Negocios activos" value={`${totals.active}/${orgs.length}`} color="#e9ecf1" icon={Store} />
+            <StatCard label="Ventas del mes (global)" value={fmt0(totals.salesMonth)} color="#2ecc71" icon={TrendingUp} />
+            <StatCard label="Valor inventario (global)" value={fmt0(totals.value)} color="#3fa9f5" icon={Boxes} />
+            <StatCard label="Piezas bajo mínimo" value={`${totals.low}`} color={totals.low > 0 ? "#e8a13a" : "#2ecc71"} icon={AlertTriangle} />
+          </div>
+        )}
+
         {/* Listado */}
-        <SectionTitle icon={Store}>Refaccionarias ({orgs.length})</SectionTitle>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+          <SectionTitle icon={Store}>Refaccionarias ({orgs.length})</SectionTitle>
+          <div style={{ flex: 1 }} />
+          {orgs.length > 0 && (
+            <div style={{ position: "relative" }}>
+              <Search size={14} color="#5a6372" style={{ position: "absolute", left: 10, top: 11 }} />
+              <input placeholder="Buscar refaccionaria…" value={q} onChange={e => setQ(e.target.value)} style={{ paddingLeft: 30, width: 220 }} />
+            </div>
+          )}
+        </div>
         {orgs.length === 0 ? (
           <EmptyState text="Aún no hay refaccionarias. Crea la primera arriba." />
+        ) : filteredOrgs.length === 0 ? (
+          <EmptyState text="Sin resultados para tu búsqueda." />
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
-            {orgs.map(o => (
-              <div key={o.id} style={{ background: "#161d29", border: "1px solid #29323f", borderRadius: 14, padding: 16, borderTop: `3px solid ${o.accent || DEFAULT_ACCENT}` }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                  {o.logo
-                    ? <img src={o.logo} alt="" style={{ width: 42, height: 42, borderRadius: 10, objectFit: "cover" }} />
-                    : <div style={{ width: 42, height: 42, borderRadius: 10, background: (o.accent || DEFAULT_ACCENT) + "22", display: "flex", alignItems: "center", justifyContent: "center" }}><Boxes size={22} color={o.accent || DEFAULT_ACCENT} /></div>}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div className="sg" style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{o.name}</div>
-                    <div style={{ fontSize: 11, color: "#5a6372", display: "flex", alignItems: "center", gap: 5 }}>
-                      <span style={{ width: 10, height: 10, borderRadius: 3, background: o.accent || DEFAULT_ACCENT, display: "inline-block" }} />
-                      {o.createdAt || ""}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(290px, 1fr))", gap: 14 }}>
+            {filteredOrgs.map(o => {
+              const s = stats[o.id] || { parts: 0, value: 0, low: 0, salesMonth: 0 };
+              const suspended = o.status === "suspended";
+              return (
+                <div key={o.id} style={{ background: "#161d29", border: "1px solid #29323f", borderRadius: 14, padding: 16, borderTop: `3px solid ${suspended ? "#5a6372" : (o.accent || DEFAULT_ACCENT)}`, opacity: suspended ? 0.6 : 1 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                    {o.logo
+                      ? <img src={o.logo} alt="" style={{ width: 42, height: 42, borderRadius: 10, objectFit: "cover" }} />
+                      : <div style={{ width: 42, height: 42, borderRadius: 10, background: (o.accent || DEFAULT_ACCENT) + "22", display: "flex", alignItems: "center", justifyContent: "center" }}><Boxes size={22} color={o.accent || DEFAULT_ACCENT} /></div>}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="sg" style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{o.name}</div>
+                      <div style={{ fontSize: 11, color: "#5a6372", display: "flex", alignItems: "center", gap: 5 }}>
+                        {suspended
+                          ? <span style={{ color: "#e25c5c", fontWeight: 700 }}>● Suspendida</span>
+                          : <><span style={{ width: 10, height: 10, borderRadius: 3, background: o.accent || DEFAULT_ACCENT, display: "inline-block" }} />{o.createdAt || ""}</>}
+                      </div>
                     </div>
                   </div>
+
+                  {/* Resumen del negocio */}
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
+                    <MiniKPI label="Ventas del mes" value={fmt0(s.salesMonth)} color="#2ecc71" />
+                    <MiniKPI label="Inventario" value={fmt0(s.value)} color="#3fa9f5" />
+                    <MiniKPI label="Piezas" value={`${s.parts}`} color="#e9ecf1" />
+                    <MiniKPI label="Bajo mínimo" value={`${s.low}`} color={s.low > 0 ? "#e8a13a" : "#5a6372"} />
+                  </div>
+
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button onClick={() => onEnter(o.id)} style={{ ...btnGold, flex: 1, justifyContent: "center", padding: "8px 0" }}>
+                      Entrar <ArrowRight size={15} />
+                    </button>
+                    <button onClick={() => edit(o)} style={{ ...btnGhost, padding: "8px 10px" }} title="Editar"><Pencil size={14} /></button>
+                    <button onClick={() => toggleStatus(o)} style={{ ...btnGhost, padding: "8px 10px" }} title={suspended ? "Reactivar" : "Suspender"}>
+                      {suspended ? <Check size={14} /> : <Lock size={14} />}
+                    </button>
+                    <button onClick={() => setDelId(o.id)} style={{ ...btnDanger, padding: "8px 10px" }} title="Eliminar"><Trash2 size={14} /></button>
+                  </div>
                 </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button onClick={() => onEnter(o.id)} style={{ ...btnGold, flex: 1, justifyContent: "center", padding: "8px 0" }}>
-                    Entrar <ArrowRight size={15} />
-                  </button>
-                  <button onClick={() => edit(o)} style={{ ...btnGhost, padding: "8px 10px" }} title="Editar"><Pencil size={14} /></button>
-                  <button onClick={() => setDelId(o.id)} style={{ ...btnDanger, padding: "8px 10px" }} title="Eliminar"><Trash2 size={14} /></button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -988,6 +1086,15 @@ function MiniStat({ label, value, color }) {
     <div style={{ background: "#161d29", border: "1px solid #29323f", borderRadius: 12, padding: "8px 14px" }}>
       <div style={{ fontSize: 11, color: "#8a93a3", fontWeight: 600 }}>{label}</div>
       <div className="sg" style={{ fontSize: 16, fontWeight: 700, color: color || "#e9ecf1" }}>{value}</div>
+    </div>
+  );
+}
+
+function MiniKPI({ label, value, color }) {
+  return (
+    <div style={{ background: "#0c1118", border: "1px solid #29323f", borderRadius: 8, padding: "7px 9px" }}>
+      <div style={{ fontSize: 10, color: "#8a93a3", fontWeight: 600 }}>{label}</div>
+      <div className="sg" style={{ fontSize: 14, fontWeight: 700, color: color || "#e9ecf1" }}>{value}</div>
     </div>
   );
 }
