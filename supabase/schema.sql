@@ -13,10 +13,12 @@ create table if not exists public.organizations (
   accent            text default '#d4af37', -- color de marca
   status            text default 'active',  -- active | suspended
   default_min_stock int default 0,          -- stock mínimo por defecto del negocio
+  theme             text default 'dark',     -- tema de la interfaz: dark | light
   created_at        timestamptz default now()
 );
--- Para bases ya creadas: agrega la columna si falta
+-- Para bases ya creadas: agrega las columnas si faltan
 alter table public.organizations add column if not exists default_min_stock int default 0;
+alter table public.organizations add column if not exists theme text default 'dark';
 
 -- Espejo de auth.users: guarda el rol de plataforma (super-admin o no)
 create table if not exists public.profiles (
