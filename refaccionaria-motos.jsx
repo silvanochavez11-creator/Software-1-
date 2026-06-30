@@ -21,6 +21,30 @@ const EXPENSE_CATS = ["Compra a proveedor", "Renta", "Servicios (luz/agua/intern
 const uid = () => crypto.randomUUID();
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
+// Agrupación de fechas por periodo para las gráficas
+const weekStart = (dateStr) => {
+  const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const diff = (dt.getUTCDay() + 6) % 7; // días desde el lunes
+  dt.setUTCDate(dt.getUTCDate() - diff);
+  return dt.toISOString().slice(0, 10);
+};
+const bucketOf = (dateStr, gran) => gran === "day" ? dateStr.slice(0, 10) : gran === "week" ? weekStart(dateStr) : dateStr.slice(0, 7);
+const bucketLabel = (key, gran) => gran === "month" ? key : key.slice(5); // mes: 2026-06 · día/semana: MM-DD
+const GRAN_KEEP = { day: 14, week: 12, month: 12 }; // cuántos periodos mostrar
+const GranToggle = ({ gran, setGran }) => (
+  <div style={{ display: "flex", gap: 4 }}>
+    {[["day", "Día"], ["week", "Semana"], ["month", "Mes"]].map(([id, label]) => (
+      <button key={id} onClick={() => setGran(id)} style={{
+        padding: "5px 12px", borderRadius: 7, fontSize: 12, fontWeight: 700,
+        border: gran === id ? "1px solid var(--accent)" : "1px solid var(--border)",
+        background: gran === id ? "var(--accent-soft)" : "transparent",
+        color: gran === id ? "var(--accent)" : "var(--muted)",
+      }}>{label}</button>
+    ))}
+  </div>
+);
+
 // Nivel de existencias de una pieza, para los avisos
 const stockStatus = (p) => {
   const s = Number(p.stock) || 0, m = Number(p.minStock) || 0;
@@ -1154,22 +1178,23 @@ function SectionTitle({ children, icon: Icon }) {
 
 /* ---------- Tablero ---------- */
 function Tablero({ inventoryValue, inventoryRetail, lowStock, monthRevenue, monthNet, monthGross, sales, expenses, parts, setTab }) {
+  const [gran, setGran] = useState("month");
   const monthly = useMemo(() => {
     const map = {};
     for (const s of sales) {
-      const k = s.date.slice(0, 7);
-      if (!map[k]) map[k] = { month: k, ventas: 0, gastos: 0, utilidad: 0 };
+      const k = bucketOf(s.date, gran);
+      if (!map[k]) map[k] = { k, ventas: 0, gastos: 0, utilidad: 0 };
       map[k].ventas += s.total;
       map[k].utilidad += s.total - s.cogs;
     }
     for (const e of expenses) {
-      const k = e.date.slice(0, 7);
-      if (!map[k]) map[k] = { month: k, ventas: 0, gastos: 0, utilidad: 0 };
+      const k = bucketOf(e.date, gran);
+      if (!map[k]) map[k] = { k, ventas: 0, gastos: 0, utilidad: 0 };
       map[k].gastos += e.amount;
       map[k].utilidad -= e.amount;
     }
-    return Object.values(map).sort((a, b) => a.month.localeCompare(b.month)).slice(-12);
-  }, [sales, expenses]);
+    return Object.values(map).sort((a, b) => a.k.localeCompare(b.k)).slice(-GRAN_KEEP[gran]);
+  }, [sales, expenses, gran]);
 
   const topProducts = useMemo(() => {
     const map = {};
@@ -1215,13 +1240,16 @@ function Tablero({ inventoryValue, inventoryRetail, lowStock, monthRevenue, mont
 
       {monthly.length > 0 ? (
         <Card style={{ marginBottom: 18 }}>
-          <SectionTitle icon={BarChart3}>Ventas vs gastos por mes</SectionTitle>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+            <SectionTitle icon={BarChart3}>Ventas vs gastos por {gran === "day" ? "día" : gran === "week" ? "semana" : "mes"}</SectionTitle>
+            <GranToggle gran={gran} setGran={setGran} />
+          </div>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={monthly}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="month" stroke="var(--muted)" fontSize={11} />
+              <XAxis dataKey="k" stroke="var(--muted)" fontSize={11} tickFormatter={(v) => bucketLabel(v, gran)} />
               <YAxis stroke="var(--muted)" fontSize={11} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-              <Tooltip contentStyle={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8 }} formatter={(v) => fmt0(v)} />
+              <Tooltip contentStyle={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8 }} formatter={(v) => fmt0(v)} labelFormatter={(l) => bucketLabel(l, gran)} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Bar dataKey="ventas" name="Ventas" fill="#2ecc71" radius={[4, 4, 0, 0]} />
               <Bar dataKey="gastos" name="Gastos" fill="#e25c5c" radius={[4, 4, 0, 0]} />
@@ -1717,6 +1745,7 @@ function Gastos({ expenses, setExpenses, showToast }) {
 /* ---------- Contabilidad ---------- */
 function Contabilidad({ sales, expenses }) {
   const [period, setPeriod] = useState("mes"); // mes | todo
+  const [gran, setGran] = useState("month"); // day | week | month
 
   const inPeriod = (dateStr) => period === "todo" || dateStr.slice(0, 7) === todayStr().slice(0, 7);
   const pSales = useMemo(() => sales.filter(s => inPeriod(s.date)), [sales, period]);
@@ -1732,17 +1761,17 @@ function Contabilidad({ sales, expenses }) {
   const monthly = useMemo(() => {
     const map = {};
     for (const s of sales) {
-      const k = s.date.slice(0, 7);
-      if (!map[k]) map[k] = { month: k, ingresos: 0, costo: 0, gastos: 0, utilidad: 0 };
+      const k = bucketOf(s.date, gran);
+      if (!map[k]) map[k] = { k, ingresos: 0, costo: 0, gastos: 0, utilidad: 0 };
       map[k].ingresos += s.total; map[k].costo += s.cogs; map[k].utilidad += s.total - s.cogs;
     }
     for (const e of expenses) {
-      const k = e.date.slice(0, 7);
-      if (!map[k]) map[k] = { month: k, ingresos: 0, costo: 0, gastos: 0, utilidad: 0 };
+      const k = bucketOf(e.date, gran);
+      if (!map[k]) map[k] = { k, ingresos: 0, costo: 0, gastos: 0, utilidad: 0 };
       map[k].gastos += e.amount; map[k].utilidad -= e.amount;
     }
-    return Object.values(map).sort((a, b) => a.month.localeCompare(b.month)).slice(-12);
-  }, [sales, expenses]);
+    return Object.values(map).sort((a, b) => a.k.localeCompare(b.k)).slice(-GRAN_KEEP[gran]);
+  }, [sales, expenses, gran]);
 
   const expenseByCat = useMemo(() => {
     const map = {};
@@ -1782,13 +1811,16 @@ function Contabilidad({ sales, expenses }) {
 
       {monthly.length > 0 && (
         <Card style={{ marginBottom: 18 }}>
-          <SectionTitle icon={TrendingUp}>Utilidad neta por mes</SectionTitle>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+            <SectionTitle icon={TrendingUp}>Ingresos y utilidad por {gran === "day" ? "día" : gran === "week" ? "semana" : "mes"}</SectionTitle>
+            <GranToggle gran={gran} setGran={setGran} />
+          </div>
           <ResponsiveContainer width="100%" height={240}>
             <LineChart data={monthly}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="month" stroke="var(--muted)" fontSize={11} />
+              <XAxis dataKey="k" stroke="var(--muted)" fontSize={11} tickFormatter={(v) => bucketLabel(v, gran)} />
               <YAxis stroke="var(--muted)" fontSize={11} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-              <Tooltip contentStyle={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8 }} formatter={(v) => fmt0(v)} />
+              <Tooltip contentStyle={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 8 }} formatter={(v) => fmt0(v)} labelFormatter={(l) => bucketLabel(l, gran)} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Line type="monotone" dataKey="ingresos" name="Ingresos" stroke="#2ecc71" strokeWidth={2} dot={false} />
               <Line type="monotone" dataKey="utilidad" name="Utilidad neta" stroke="var(--accent)" strokeWidth={2.5} dot={false} />
