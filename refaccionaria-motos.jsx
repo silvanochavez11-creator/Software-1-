@@ -127,6 +127,39 @@ async function signUp(email, password) {
   if (d.access_token) saveSession(d);
   return d; // si requiere confirmación de correo, no trae access_token
 }
+// Envía un correo con enlace para restablecer la contraseña
+async function recoverPassword(email) {
+  const res = await fetch(`${SB_URL}/auth/v1/recover?redirect_to=${encodeURIComponent(window.location.origin)}`, {
+    method: "POST", headers: { apikey: SB_KEY, "Content-Type": "application/json" }, body: JSON.stringify({ email }),
+  });
+  if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.msg || d.message || "No se pudo enviar el correo"); }
+  return true;
+}
+// Cambia la contraseña del usuario con sesión actual (usado tras el enlace de recuperación)
+async function updatePassword(password) {
+  const res = await fetch(`${SB_URL}/auth/v1/user`, {
+    method: "PUT", headers: { apikey: SB_KEY, "Content-Type": "application/json", Authorization: `Bearer ${_session?.access_token}` },
+    body: JSON.stringify({ password }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.msg || data.message || data.error_description || "No se pudo cambiar la contraseña");
+  if (_session) { _session.user = data; try { store.set(SESSION_KEY, JSON.stringify(_session)); } catch (e) {} }
+  return data;
+}
+// Detecta el enlace de recuperación (tokens en el hash de la URL) y arranca sesión temporal
+function consumeRecoveryHash() {
+  try {
+    const h = window.location.hash || "";
+    if (h.indexOf("access_token") === -1) return false;
+    const params = new URLSearchParams(h.replace(/^#/, ""));
+    if (params.get("type") !== "recovery") return false;
+    const access_token = params.get("access_token");
+    if (!access_token) return false;
+    saveSession({ access_token, refresh_token: params.get("refresh_token"), expires_in: parseInt(params.get("expires_in")) || 3600, user: null });
+    try { history.replaceState(null, "", window.location.pathname + window.location.search); } catch (e) {}
+    return true;
+  } catch (e) { return false; }
+}
 async function refreshSession() {
   if (!_session?.refresh_token) throw new Error("sin sesión");
   return saveSession(await sbAuth("token?grant_type=refresh_token", { refresh_token: _session.refresh_token }));
@@ -250,6 +283,7 @@ export default function RefaccionariaSaaS() {
   const [orgs, setOrgs] = useState([]);
   const [activeOrgId, setActiveOrgId] = useState(null);
   const [screen, setScreen] = useState("home");
+  const [recovery, setRecovery] = useState(false);
 
   const loadMe = async () => {
     if (!_session?.user) return;
@@ -273,6 +307,8 @@ export default function RefaccionariaSaaS() {
 
   useEffect(() => {
     (async () => {
+      // ¿Llegó por el enlace de recuperación de contraseña?
+      if (consumeRecoveryHash()) { setRecovery(true); setBooting(false); return; }
       const s = await restoreSession();
       setSession(s);
       if (s) await loadMe();
@@ -281,9 +317,10 @@ export default function RefaccionariaSaaS() {
   }, []);
 
   const onAuthed = async () => { setSession(_session); await loadMe(); setScreen("home"); };
-  const doSignOut = async () => { await signOut(); setSession(null); setProfile(null); setOrgs([]); setActiveOrgId(null); setScreen("home"); };
+  const doSignOut = async () => { await signOut(); setSession(null); setProfile(null); setOrgs([]); setActiveOrgId(null); setScreen("home"); setRecovery(false); };
 
   if (booting) return <><GlobalStyles /><Splash /></>;
+  if (recovery) return <><GlobalStyles /><ResetPasswordScreen onDone={async () => { setRecovery(false); setSession(_session); await loadMe(); setScreen("home"); }} onCancel={doSignOut} /></>;
   if (!session) return <><GlobalStyles /><AuthScreen onAuthed={onAuthed} /></>;
 
   const isAdmin = !!profile?.is_admin;
@@ -325,6 +362,16 @@ function AuthScreen({ onAuthed }) {
   const [info, setInfo] = useState(null);
 
   const submit = async () => {
+    if (mode === "recover") {
+      if (!email.trim()) return setError("Escribe tu correo.");
+      setBusy(true); setError(null); setInfo(null);
+      try {
+        await recoverPassword(email.trim());
+        setInfo("Te enviamos un enlace a tu correo para restablecer la contraseña. Revísalo (y la carpeta de spam).");
+      } catch (e) { setError(e.message || "No se pudo enviar el correo."); }
+      finally { setBusy(false); }
+      return;
+    }
     if (!email.trim() || !password) return setError("Escribe tu correo y contraseña.");
     setBusy(true); setError(null); setInfo(null);
     try {
@@ -340,6 +387,8 @@ function AuthScreen({ onAuthed }) {
     finally { setBusy(false); }
   };
 
+  const subtitle = mode === "login" ? "Inicia sesión para continuar" : mode === "register" ? "Crea tu cuenta" : "Recupera tu contraseña";
+
   return (
     <ScreenShell>
       <div style={{ width: 380, maxWidth: "100%" }}>
@@ -348,31 +397,91 @@ function AuthScreen({ onAuthed }) {
             <Boxes size={30} color="var(--accent)" />
           </div>
           <div className="sg" style={{ fontSize: 22, fontWeight: 700 }}>Refaccionaria de Motos</div>
-          <div style={{ fontSize: 13, color: "#8a93a3", marginTop: 2 }}>{mode === "login" ? "Inicia sesión para continuar" : "Crea tu cuenta"}</div>
+          <div style={{ fontSize: 13, color: "#8a93a3", marginTop: 2 }}>{subtitle}</div>
         </div>
         <Card>
           <label style={lbl}>Correo</label>
           <div style={{ position: "relative", marginBottom: 12 }}>
             <Mail size={15} color="#5a6372" style={{ position: "absolute", left: 11, top: 11 }} />
-            <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="tucorreo@ejemplo.com" style={{ width: "100%", paddingLeft: 34 }} />
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} placeholder="tucorreo@ejemplo.com" style={{ width: "100%", paddingLeft: 34 }} />
           </div>
-          <label style={lbl}>Contraseña</label>
-          <div style={{ position: "relative", marginBottom: 16 }}>
-            <Lock size={15} color="#5a6372" style={{ position: "absolute", left: 11, top: 11 }} />
-            <input type="password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} placeholder="••••••••" style={{ width: "100%", paddingLeft: 34 }} />
-          </div>
+          {mode !== "recover" && (
+            <>
+              <label style={lbl}>Contraseña</label>
+              <div style={{ position: "relative", marginBottom: 8 }}>
+                <Lock size={15} color="#5a6372" style={{ position: "absolute", left: 11, top: 11 }} />
+                <input type="password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} placeholder="••••••••" style={{ width: "100%", paddingLeft: 34 }} />
+              </div>
+              {mode === "login" && (
+                <div style={{ textAlign: "right", marginBottom: 12 }}>
+                  <button onClick={() => { setMode("recover"); setError(null); setInfo(null); }} style={{ background: "none", border: "none", color: "#8a93a3", fontSize: 11 }}>¿Olvidaste tu contraseña?</button>
+                </div>
+              )}
+            </>
+          )}
           {error && <div style={{ color: "#e25c5c", fontSize: 12, marginBottom: 10 }}>{error}</div>}
           {info && <div style={{ color: "#2ecc71", fontSize: 12, marginBottom: 10 }}>{info}</div>}
           <button onClick={submit} disabled={busy} style={{ ...btnGold, width: "100%", justifyContent: "center" }}>
-            {busy ? <Loader2 size={15} className="spin" /> : (mode === "login" ? <LogIn size={15} /> : <UserPlus size={15} />)}
-            {mode === "login" ? "Entrar" : "Crear cuenta"}
+            {busy ? <Loader2 size={15} className="spin" /> : (mode === "login" ? <LogIn size={15} /> : mode === "register" ? <UserPlus size={15} /> : <Mail size={15} />)}
+            {mode === "login" ? "Entrar" : mode === "register" ? "Crear cuenta" : "Enviar enlace"}
           </button>
           <div style={{ textAlign: "center", marginTop: 14, fontSize: 12, color: "#8a93a3" }}>
-            {mode === "login" ? "¿No tienes cuenta? " : "¿Ya tienes cuenta? "}
-            <button onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(null); setInfo(null); }}
-              style={{ background: "none", border: "none", color: "var(--accent)", fontWeight: 700, fontSize: 12 }}>
-              {mode === "login" ? "Regístrate" : "Inicia sesión"}
-            </button>
+            {mode === "recover" ? (
+              <button onClick={() => { setMode("login"); setError(null); setInfo(null); }} style={{ background: "none", border: "none", color: "var(--accent)", fontWeight: 700, fontSize: 12 }}>Volver a iniciar sesión</button>
+            ) : (
+              <>
+                {mode === "login" ? "¿No tienes cuenta? " : "¿Ya tienes cuenta? "}
+                <button onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(null); setInfo(null); }}
+                  style={{ background: "none", border: "none", color: "var(--accent)", fontWeight: 700, fontSize: 12 }}>
+                  {mode === "login" ? "Regístrate" : "Inicia sesión"}
+                </button>
+              </>
+            )}
+          </div>
+        </Card>
+      </div>
+    </ScreenShell>
+  );
+}
+
+function ResetPasswordScreen({ onDone, onCancel }) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const submit = async () => {
+    if (password.length < 6) return setError("La contraseña debe tener al menos 6 caracteres.");
+    if (password !== confirm) return setError("Las contraseñas no coinciden.");
+    setBusy(true); setError(null);
+    try {
+      await updatePassword(password);
+      await onDone();
+    } catch (e) { setError(e.message || "No se pudo cambiar la contraseña. El enlace pudo expirar."); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <ScreenShell>
+      <div style={{ width: 380, maxWidth: "100%" }}>
+        <div style={{ textAlign: "center", marginBottom: 22 }}>
+          <div style={{ width: 56, height: 56, borderRadius: 14, background: "var(--accent-soft)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 10 }}>
+            <Lock size={28} color="var(--accent)" />
+          </div>
+          <div className="sg" style={{ fontSize: 22, fontWeight: 700 }}>Nueva contraseña</div>
+          <div style={{ fontSize: 13, color: "#8a93a3", marginTop: 2 }}>Escribe tu nueva contraseña</div>
+        </div>
+        <Card>
+          <label style={lbl}>Nueva contraseña</label>
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" style={{ width: "100%", marginBottom: 12 }} />
+          <label style={lbl}>Repite la contraseña</label>
+          <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} placeholder="••••••••" style={{ width: "100%", marginBottom: 14 }} />
+          {error && <div style={{ color: "#e25c5c", fontSize: 12, marginBottom: 10 }}>{error}</div>}
+          <button onClick={submit} disabled={busy} style={{ ...btnGold, width: "100%", justifyContent: "center" }}>
+            {busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />} Guardar contraseña
+          </button>
+          <div style={{ textAlign: "center", marginTop: 12 }}>
+            <button onClick={onCancel} style={{ background: "none", border: "none", color: "#8a93a3", fontSize: 12 }}>Cancelar</button>
           </div>
         </Card>
       </div>
