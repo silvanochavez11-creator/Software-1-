@@ -468,7 +468,7 @@ function LandingPage({ onEnter }) {
             <div style={{ width: 34, height: 34, borderRadius: 9, background: "var(--accent-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <Boxes size={19} color="var(--accent)" />
             </div>
-            <span className="sg" style={{ fontWeight: 700, fontSize: 16 }}>Refaccionaria<span style={{ color: "var(--accent)" }}>Cloud</span></span>
+            <span className="sg" style={{ fontWeight: 700, fontSize: 16 }}>Aivora<span style={{ color: "var(--accent)" }}>ia</span></span>
           </div>
           <div className="ld-nav-links">
             <a href="#funciones" style={navLink}>Funciones</a>
@@ -654,10 +654,10 @@ function LandingPage({ onEnter }) {
         <div className="ld-wrap" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--muted)" }}>
             <Boxes size={16} color="var(--accent)" />
-            <span className="sg" style={{ fontWeight: 700, color: "var(--text)" }}>Refaccionaria<span style={{ color: "var(--accent)" }}>Cloud</span></span>
+            <span className="sg" style={{ fontWeight: 700, color: "var(--text)" }}>Aivora<span style={{ color: "var(--accent)" }}>ia</span></span>
             <span>· Inventario, ventas y contabilidad para refaccionarias</span>
           </div>
-          <div style={{ fontSize: 12, color: "var(--muted-2)" }}>© {new Date().getFullYear()} Aivora · aivoraia.com</div>
+          <div style={{ fontSize: 12, color: "var(--muted-2)" }}>© {new Date().getFullYear()} Aivoraia · aivoraia.com</div>
         </div>
       </div>
     </div>
@@ -707,7 +707,7 @@ function AuthScreen({ onAuthed, initialMode = "login", onBack }) {
           <div style={{ width: 56, height: 56, borderRadius: 14, background: "var(--accent-soft)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 10 }}>
             <Boxes size={30} color="var(--accent)" />
           </div>
-          <div className="sg" style={{ fontSize: 22, fontWeight: 700 }}>Refaccionaria de Motos</div>
+          <div className="sg" style={{ fontSize: 22, fontWeight: 700 }}>Aivora<span style={{ color: "var(--accent)" }}>ia</span></div>
           <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>{subtitle}</div>
         </div>
         <Card>
