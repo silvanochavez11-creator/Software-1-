@@ -1747,7 +1747,13 @@ function Contabilidad({ sales, expenses }) {
   const [period, setPeriod] = useState("mes"); // mes | todo
   const [gran, setGran] = useState("month"); // day | week | month
 
-  const inPeriod = (dateStr) => period === "todo" || dateStr.slice(0, 7) === todayStr().slice(0, 7);
+  const inPeriod = (dateStr) => {
+    if (period === "todo") return true;
+    if (period === "hoy") return dateStr.slice(0, 10) === todayStr();
+    if (period === "semana") return weekStart(dateStr) === weekStart(todayStr());
+    return dateStr.slice(0, 7) === todayStr().slice(0, 7); // mes
+  };
+  const periodLabel = { hoy: "hoy", semana: "esta semana", mes: "este mes", todo: "histórico" }[period];
   const pSales = useMemo(() => sales.filter(s => inPeriod(s.date)), [sales, period]);
   const pExpenses = useMemo(() => expenses.filter(e => inPeriod(e.date)), [expenses, period]);
 
@@ -1781,8 +1787,8 @@ function Contabilidad({ sales, expenses }) {
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        {[["mes", "Este mes"], ["todo", "Histórico"]].map(([id, label]) => (
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {[["hoy", "Hoy"], ["semana", "Esta semana"], ["mes", "Este mes"], ["todo", "Histórico"]].map(([id, label]) => (
           <button key={id} onClick={() => setPeriod(id)} style={{
             padding: "8px 16px", borderRadius: 8, border: "1px solid var(--border)",
             background: period === id ? "var(--accent-soft)" : "transparent", color: period === id ? "var(--accent)" : "var(--muted)",
@@ -1792,7 +1798,7 @@ function Contabilidad({ sales, expenses }) {
       </div>
 
       <Card style={{ marginBottom: 18 }}>
-        <SectionTitle icon={Wallet}>Estado de resultados {period === "mes" ? "(este mes)" : "(histórico)"}</SectionTitle>
+        <SectionTitle icon={Wallet}>Estado de resultados ({periodLabel})</SectionTitle>
         <Row label="Ventas (ingresos)" value={fmt(revenue)} big />
         <Row label="− Costo de mercancía vendida" value={fmt(cogs)} muted />
         <div style={{ borderTop: "1px solid var(--border)", margin: "6px 0" }} />
