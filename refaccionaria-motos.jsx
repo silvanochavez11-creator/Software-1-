@@ -74,10 +74,9 @@ const store = {
   set: async (k, v) => { try { if (v === "" || v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} },
 };
 
-// Favicon (ícono de la pestaña): engranaje dorado por defecto (admin/login),
+// Favicon (ícono de la pestaña): logo de Aivoraia por defecto (admin/login),
 // y el logo del negocio cuando se entra a una refaccionaria.
-const GEAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#0c1118"/><g transform="translate(8,8) scale(2)" fill="none" stroke="#d4af37" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></g></svg>`;
-const DEFAULT_FAVICON = `data:image/svg+xml,${encodeURIComponent(GEAR_SVG)}`;
+const DEFAULT_FAVICON = "/favicon-64.png";
 function setFavicon(href) {
   try {
     let link = document.querySelector("link[rel~='icon']");
@@ -86,8 +85,15 @@ function setFavicon(href) {
   } catch (e) {}
 }
 
-const DEFAULT_ACCENT = "#d4af37";
-const ACCENT_PRESETS = ["#d4af37", "#e2574c", "#2ecc71", "#3fa9f5", "#9b59b6", "#e8852b", "#1abc9c", "#ec4899"];
+// Colores de marca Aivoraia: azul #1F5FD0 · cian #55AEEA · tinta #12151C
+const DEFAULT_ACCENT = "#55AEEA";
+const ACCENT_PRESETS = ["#55AEEA", "#1F5FD0", "#d4af37", "#e2574c", "#2ecc71", "#9b59b6", "#e8852b", "#ec4899"];
+// Nombre de la marca con el degradado oficial (para fondos oscuros)
+const brandWord = {
+  fontFamily: "'Manrope', sans-serif", fontWeight: 700, letterSpacing: "-0.025em", lineHeight: 1,
+  background: "linear-gradient(100deg,#ffffff 60%,#1F5FD0 84%,#55AEEA 100%)",
+  WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent",
+};
 // Paleta clara (se aplica sobre el root de una refaccionaria con tema claro)
 const THEME_LIGHT = {
   "--bg": "#f3f5f8", "--card": "#ffffff", "--surface": "#eceff4", "--border": "#d8dde6", "--border-soft": "#eaedf2",
@@ -280,7 +286,7 @@ async function extractTextFromFile(file) {
 function GlobalStyles() {
   return (
     <style>{`
-      @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=Manrope:wght@600;700&display=swap');
       :root {
         --bg:#0c1118; --card:#161d29; --surface:#1c2433; --border:#29323f; --border-soft:#20283480;
         --dashed:#3a4452; --text:#e9ecf1; --text-2:#c4ccd8; --muted:#8a93a3; --muted-2:#5a6372;
@@ -464,11 +470,9 @@ function LandingPage({ onEnter }) {
       {/* ---- Barra de navegación ---- */}
       <div style={{ position: "sticky", top: 0, zIndex: 50, background: "#0c1118e6", backdropFilter: "blur(8px)", borderBottom: "1px solid var(--border-soft)" }}>
         <div className="ld-wrap" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", height: 62 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 34, height: 34, borderRadius: 9, background: "var(--accent-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <Boxes size={19} color="var(--accent)" />
-            </div>
-            <span className="sg" style={{ fontWeight: 700, fontSize: 16 }}>Aivora<span style={{ color: "var(--accent)" }}>ia</span></span>
+          <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+            <img src="/aivoraia-symbol-light-512.png" alt="" style={{ width: 30, height: 30, objectFit: "contain" }} />
+            <span style={{ ...brandWord, fontSize: 20 }}>Aivoraia</span>
           </div>
           <div className="ld-nav-links">
             <a href="#funciones" style={navLink}>Funciones</a>
@@ -653,8 +657,8 @@ function LandingPage({ onEnter }) {
       <div style={{ borderTop: "1px solid var(--border-soft)", padding: "26px 0" }}>
         <div className="ld-wrap" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--muted)" }}>
-            <Boxes size={16} color="var(--accent)" />
-            <span className="sg" style={{ fontWeight: 700, color: "var(--text)" }}>Aivora<span style={{ color: "var(--accent)" }}>ia</span></span>
+            <img src="/aivoraia-symbol-light-512.png" alt="" style={{ width: 18, height: 18, objectFit: "contain" }} />
+            <span style={{ ...brandWord, fontSize: 15 }}>Aivoraia</span>
             <span>· Inventario, ventas y contabilidad para refaccionarias</span>
           </div>
           <div style={{ fontSize: 12, color: "var(--muted-2)" }}>© {new Date().getFullYear()} Aivoraia · aivoraia.com</div>
@@ -704,10 +708,8 @@ function AuthScreen({ onAuthed, initialMode = "login", onBack }) {
     <ScreenShell>
       <div style={{ width: 380, maxWidth: "100%" }}>
         <div style={{ textAlign: "center", marginBottom: 22 }}>
-          <div style={{ width: 56, height: 56, borderRadius: 14, background: "var(--accent-soft)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 10 }}>
-            <Boxes size={30} color="var(--accent)" />
-          </div>
-          <div className="sg" style={{ fontSize: 22, fontWeight: 700 }}>Aivora<span style={{ color: "var(--accent)" }}>ia</span></div>
+          <img src="/aivoraia-symbol-light-512.png" alt="" style={{ width: 54, height: 54, objectFit: "contain", marginBottom: 10 }} />
+          <div style={{ ...brandWord, fontSize: 26 }}>Aivoraia</div>
           <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>{subtitle}</div>
         </div>
         <Card>
