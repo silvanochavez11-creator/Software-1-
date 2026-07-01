@@ -317,6 +317,8 @@ export default function RefaccionariaSaaS() {
   const [activeOrgId, setActiveOrgId] = useState(null);
   const [screen, setScreen] = useState("home");
   const [recovery, setRecovery] = useState(false);
+  // Sin sesión: null = web pública (landing) · "login"/"register" = pantalla de acceso
+  const [authIntent, setAuthIntent] = useState(null);
 
   const loadMe = async () => {
     if (!_session?.user) return;
@@ -350,11 +352,14 @@ export default function RefaccionariaSaaS() {
   }, []);
 
   const onAuthed = async () => { setSession(_session); await loadMe(); setScreen("home"); };
-  const doSignOut = async () => { await signOut(); setSession(null); setProfile(null); setOrgs([]); setActiveOrgId(null); setScreen("home"); setRecovery(false); };
+  const doSignOut = async () => { await signOut(); setSession(null); setProfile(null); setOrgs([]); setActiveOrgId(null); setScreen("home"); setRecovery(false); setAuthIntent(null); };
 
   if (booting) return <><GlobalStyles /><Splash /></>;
   if (recovery) return <><GlobalStyles /><ResetPasswordScreen onDone={async () => { setRecovery(false); setSession(_session); await loadMe(); setScreen("home"); }} onCancel={doSignOut} /></>;
-  if (!session) return <><GlobalStyles /><AuthScreen onAuthed={onAuthed} /></>;
+  if (!session) {
+    if (!authIntent) return <><GlobalStyles /><LandingPage onEnter={(mode) => setAuthIntent(mode || "login")} /></>;
+    return <><GlobalStyles /><AuthScreen initialMode={authIntent} onAuthed={onAuthed} onBack={() => setAuthIntent(null)} /></>;
+  }
 
   const isAdmin = !!profile?.is_admin;
   const activeOrg = orgs.find(o => o.id === activeOrgId);
@@ -391,8 +396,271 @@ function Splash() {
   return <ScreenShell><Loader2 size={28} className="spin" color="var(--accent)" /></ScreenShell>;
 }
 
-function AuthScreen({ onAuthed }) {
-  const [mode, setMode] = useState("login"); // login | register
+/* ============================================================================
+   Web pública (landing) — lo que ve un visitante antes de iniciar sesión.
+   Presenta el producto y lleva al registro / inicio de sesión.
+============================================================================ */
+function LandingPage({ onEnter }) {
+  const features = [
+    { icon: ShoppingCart, title: "Punto de venta", desc: "Cobra en segundos: descuenta el stock solo, calcula la utilidad de cada venta e imprime tickets con tu logo y folio." },
+    { icon: Boxes, title: "Inventario completo", desc: "Altas, bajas, búsqueda por SKU, marca o compatibilidad. Importa y exporta tu inventario en CSV cuando quieras." },
+    { icon: BarChart3, title: "Contabilidad clara", desc: "Estado de resultados por día, semana, mes o histórico, con gráficas de ventas, gastos y utilidad." },
+    { icon: Sparkles, title: "Asistente con IA", desc: "Dile qué llegó y lo captura por ti. Importa facturas CSV, XML/CFDI o PDF y las convierte en inventario." },
+    { icon: Bell, title: "Avisos de stock", desc: "Niveles por pieza (agotado, crítico, por agotarse), campana con pendientes y lista de reorden sugerida." },
+    { icon: Store, title: "Varias sucursales", desc: "Cada refaccionaria con su logo, color y tema. Cada dueño ve solo su negocio; tú lo ves todo." },
+    { icon: Shield, title: "Datos seguros en la nube", desc: "Tu información viaja cifrada y queda aislada por negocio. Entra desde cualquier computadora o celular." },
+    { icon: Printer, title: "Tickets imprimibles", desc: "Tickets de 80 mm listos para tu impresora térmica, con folio, logo y datos de tu negocio." },
+  ];
+  const steps = [
+    { n: "1", title: "Crea tu cuenta", desc: "Regístrate con tu correo en menos de un minuto. Sin instalar nada: todo funciona en el navegador." },
+    { n: "2", title: "Carga tu inventario", desc: "Captúralo a mano, súbelo en CSV o deja que el asistente de IA lo lea desde tus facturas." },
+    { n: "3", title: "Vende y controla", desc: "Cobra en el punto de venta y mira en el tablero cuánto vendes, cuánto gastas y cuánto ganas." },
+  ];
+  const plans = [
+    { name: "Básico", price: "$349", per: "/mes por sucursal", hl: false, items: ["1 refaccionaria", "Inventario y punto de venta", "Contabilidad y gráficas", "Avisos de stock", "Soporte por correo"] },
+    { name: "Profesional", price: "$549", per: "/mes por sucursal", hl: true, items: ["Todo lo del plan Básico", "Asistente con IA", "Importador de facturas (CSV/XML/PDF)", "Tickets con tu logo", "Soporte prioritario"] },
+    { name: "Cadena", price: "A la medida", per: "", hl: false, items: ["Varias sucursales", "Tablero global del grupo", "Acompañamiento en la carga inicial", "Facturación consolidada"] },
+  ];
+  const faqs = [
+    { q: "¿Necesito instalar algo?", a: "No. Funciona en el navegador de cualquier computadora, tablet o celular con internet. Tus datos se guardan en la nube y puedes entrar desde donde estés." },
+    { q: "¿Sirve para refaccionarias que no son de motos?", a: "Sí. Las categorías de piezas son configurables y el flujo de inventario, ventas y gastos es el mismo para cualquier refaccionaria o negocio de mostrador." },
+    { q: "¿Puedo pasar mi inventario actual?", a: "Sí. Puedes importar un archivo CSV con tus piezas, o subir tus facturas (CSV, XML/CFDI o PDF) y el asistente de IA las convierte en inventario por ti." },
+    { q: "¿Qué pasa si tengo varias sucursales?", a: "Cada sucursal se maneja como un negocio aparte con su propio inventario, ventas y personalización, y tú puedes verlas todas desde un panel de administrador." },
+    { q: "¿Mis datos están seguros?", a: "Sí. Cada negocio está aislado a nivel base de datos: un dueño solo puede ver y tocar la información de su refaccionaria." },
+  ];
+  const navLink = { background: "none", border: "none", color: "var(--muted)", fontSize: 13, fontWeight: 600, textDecoration: "none", padding: "6px 4px" };
+  const sectionTitle = (kicker, title, sub) => (
+    <div style={{ textAlign: "center", marginBottom: 36 }}>
+      <div style={{ color: "var(--accent)", fontSize: 12, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8 }}>{kicker}</div>
+      <div className="sg" style={{ fontSize: 30, fontWeight: 700, lineHeight: 1.2 }}>{title}</div>
+      {sub && <div style={{ color: "var(--muted)", fontSize: 14, marginTop: 10, maxWidth: 560, margin: "10px auto 0" }}>{sub}</div>}
+    </div>
+  );
+
+  return (
+    <div style={{ "--accent": DEFAULT_ACCENT, "--accent-soft": DEFAULT_ACCENT + "22", minHeight: "100vh", background: "var(--bg)", color: "var(--text)", fontFamily: "'Inter', system-ui, sans-serif" }}>
+      <style>{`
+        html { scroll-behavior: smooth; }
+        .ld-wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+        .ld-hero { display: grid; grid-template-columns: 1.15fr 1fr; gap: 48px; align-items: center; padding: 72px 0 64px; }
+        .ld-grid-feat { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+        .ld-grid-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+        .ld-grid-plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; align-items: stretch; }
+        .ld-nav-links { display: flex; gap: 18px; align-items: center; }
+        .ld-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
+        .ld-card:hover { border-color: var(--accent); }
+        details.ld-faq { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px; margin-bottom: 10px; }
+        details.ld-faq summary { cursor: pointer; font-weight: 600; font-size: 14px; list-style: none; display: flex; justify-content: space-between; align-items: center; }
+        details.ld-faq summary::-webkit-details-marker { display: none; }
+        details.ld-faq summary::after { content: "+"; color: var(--accent); font-size: 18px; font-weight: 700; }
+        details.ld-faq[open] summary::after { content: "–"; }
+        details.ld-faq p { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 10px 0 2px; }
+        @media (max-width: 860px) {
+          .ld-hero { grid-template-columns: 1fr; padding: 40px 0 40px; gap: 32px; }
+          .ld-nav-links { display: none; }
+        }
+      `}</style>
+
+      {/* ---- Barra de navegación ---- */}
+      <div style={{ position: "sticky", top: 0, zIndex: 50, background: "#0c1118e6", backdropFilter: "blur(8px)", borderBottom: "1px solid var(--border-soft)" }}>
+        <div className="ld-wrap" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", height: 62 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 34, height: 34, borderRadius: 9, background: "var(--accent-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <Boxes size={19} color="var(--accent)" />
+            </div>
+            <span className="sg" style={{ fontWeight: 700, fontSize: 16 }}>Refaccionaria<span style={{ color: "var(--accent)" }}>Cloud</span></span>
+          </div>
+          <div className="ld-nav-links">
+            <a href="#funciones" style={navLink}>Funciones</a>
+            <a href="#como-funciona" style={navLink}>Cómo funciona</a>
+            <a href="#precios" style={navLink}>Precios</a>
+            <a href="#faq" style={navLink}>Preguntas</a>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => onEnter("login")} style={{ ...btnGhost, padding: "8px 14px" }}><LogIn size={14} /> Entrar</button>
+            <button onClick={() => onEnter("register")} style={{ ...btnGold, padding: "8px 14px" }}><UserPlus size={14} /> Crear cuenta</button>
+          </div>
+        </div>
+      </div>
+
+      {/* ---- Hero ---- */}
+      <div className="ld-wrap">
+        <div className="ld-hero">
+          <div>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "var(--accent-soft)", color: "var(--accent)", fontSize: 12, fontWeight: 700, padding: "6px 12px", borderRadius: 999, marginBottom: 18 }}>
+              <Sparkles size={13} /> Con asistente de inteligencia artificial
+            </div>
+            <h1 className="sg" style={{ fontSize: 42, lineHeight: 1.15, fontWeight: 700, margin: "0 0 16px" }}>
+              El sistema completo para tu <span style={{ color: "var(--accent)" }}>refaccionaria</span>
+            </h1>
+            <p style={{ color: "var(--text-2)", fontSize: 16, lineHeight: 1.65, margin: "0 0 26px", maxWidth: 480 }}>
+              Inventario, punto de venta y contabilidad en un solo lugar, desde cualquier dispositivo.
+              Sabe qué tienes, qué vendes y cuánto ganas — sin hojas de cálculo ni libretas.
+            </p>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button onClick={() => onEnter("register")} style={{ ...btnGold, padding: "12px 22px", fontSize: 14 }}>
+                Empezar ahora <ArrowRight size={15} />
+              </button>
+              <button onClick={() => onEnter("login")} style={{ ...btnGhost, padding: "12px 22px", fontSize: 14, color: "var(--text-2)" }}>
+                Ya tengo cuenta
+              </button>
+            </div>
+            <div style={{ display: "flex", gap: 18, marginTop: 26, flexWrap: "wrap" }}>
+              {["Sin instalar nada", "Datos en la nube", "En español"].map(t => (
+                <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--muted)" }}>
+                  <Check size={13} color="#2ecc71" /> {t}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {/* Vista previa tipo tablero */}
+          <div style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 16, padding: 18, boxShadow: "0 24px 60px #00000055" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+              <div style={{ width: 30, height: 30, borderRadius: 8, background: "var(--accent-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}><Store size={16} color="var(--accent)" /></div>
+              <div>
+                <div className="sg" style={{ fontSize: 13, fontWeight: 700 }}>Moto Refacciones El Águila</div>
+                <div style={{ fontSize: 10, color: "var(--muted)" }}>Tablero · hoy</div>
+              </div>
+              <Bell size={15} color="var(--accent)" style={{ marginLeft: "auto" }} />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
+              {[
+                { icon: DollarSign, label: "Ventas", value: "$8,450" },
+                { icon: TrendingUp, label: "Utilidad", value: "$3,120" },
+                { icon: Package, label: "Piezas", value: "1,284" },
+              ].map(({ icon: I, label, value }) => (
+                <div key={label} style={{ background: "var(--surface)", borderRadius: 10, padding: "10px 12px" }}>
+                  <I size={13} color="var(--accent)" />
+                  <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 4 }}>{label}</div>
+                  <div className="sg" style={{ fontSize: 15, fontWeight: 700 }}>{value}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ background: "var(--surface)", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+              <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 8 }}>Ventas de la semana</div>
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 56 }}>
+                {[34, 52, 41, 68, 47, 80, 62].map((h, i) => (
+                  <div key={i} style={{ flex: 1, height: `${h}%`, borderRadius: 4, background: i === 5 ? "var(--accent)" : "var(--accent-soft)" }} />
+                ))}
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#e8a13a18", border: "1px solid #e8a13a55", borderRadius: 10, padding: "8px 12px" }}>
+              <AlertTriangle size={14} color="#e8a13a" />
+              <span style={{ fontSize: 11, color: "var(--text-2)" }}>3 piezas por agotarse · revisa la lista de reorden</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ---- Funciones ---- */}
+      <div id="funciones" style={{ padding: "64px 0", borderTop: "1px solid var(--border-soft)" }}>
+        <div className="ld-wrap">
+          {sectionTitle("Funciones", "Todo lo que tu mostrador necesita", "Deja la libreta y las hojas de cálculo: administra inventario, ventas y dinero desde una sola pantalla.")}
+          <div className="ld-grid-feat">
+            {features.map(({ icon: I, title, desc }) => (
+              <div key={title} className="ld-card">
+                <div style={{ width: 38, height: 38, borderRadius: 10, background: "var(--accent-soft)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12 }}>
+                  <I size={19} color="var(--accent)" />
+                </div>
+                <div className="sg" style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>{title}</div>
+                <div style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.6 }}>{desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ---- Cómo funciona ---- */}
+      <div id="como-funciona" style={{ padding: "64px 0", borderTop: "1px solid var(--border-soft)", background: "var(--card)" }}>
+        <div className="ld-wrap">
+          {sectionTitle("Cómo funciona", "Empiezas a vender el mismo día")}
+          <div className="ld-grid-steps">
+            {steps.map(s => (
+              <div key={s.n} style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 14, padding: 22 }}>
+                <div className="sg" style={{ fontSize: 26, fontWeight: 700, color: "var(--accent)", marginBottom: 10 }}>{s.n}</div>
+                <div className="sg" style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>{s.title}</div>
+                <div style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.6 }}>{s.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ---- Precios ---- */}
+      <div id="precios" style={{ padding: "64px 0", borderTop: "1px solid var(--border-soft)" }}>
+        <div className="ld-wrap">
+          {sectionTitle("Precios", "Un plan para cada tamaño de negocio", "Precios en pesos mexicanos. Cancela cuando quieras, sin plazos forzosos.")}
+          <div className="ld-grid-plans">
+            {plans.map(p => (
+              <div key={p.name} style={{
+                background: "var(--card)", borderRadius: 16, padding: 24, display: "flex", flexDirection: "column",
+                border: p.hl ? "1px solid var(--accent)" : "1px solid var(--border)",
+                boxShadow: p.hl ? "0 12px 40px #d4af3722" : "none", position: "relative",
+              }}>
+                {p.hl && <div style={{ position: "absolute", top: -11, left: "50%", transform: "translateX(-50%)", background: "var(--accent)", color: "#0c1118", fontSize: 11, fontWeight: 700, padding: "3px 12px", borderRadius: 999 }}>Recomendado</div>}
+                <div className="sg" style={{ fontSize: 15, fontWeight: 700, color: p.hl ? "var(--accent)" : "var(--text)" }}>{p.name}</div>
+                <div style={{ margin: "12px 0 16px" }}>
+                  <span className="sg" style={{ fontSize: 32, fontWeight: 700 }}>{p.price}</span>
+                  <span style={{ fontSize: 12, color: "var(--muted)" }}> {p.per}</span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 9, marginBottom: 20 }}>
+                  {p.items.map(it => (
+                    <span key={it} style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 13, color: "var(--text-2)" }}>
+                      <Check size={14} color="#2ecc71" style={{ flexShrink: 0, marginTop: 2 }} /> {it}
+                    </span>
+                  ))}
+                </div>
+                <button onClick={() => onEnter("register")} style={{ ...(p.hl ? btnGold : btnGhost), width: "100%", justifyContent: "center", marginTop: "auto" }}>
+                  {p.name === "Cadena" ? "Contáctanos" : "Empezar"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ---- Preguntas frecuentes ---- */}
+      <div id="faq" style={{ padding: "64px 0", borderTop: "1px solid var(--border-soft)" }}>
+        <div className="ld-wrap" style={{ maxWidth: 720 }}>
+          {sectionTitle("Preguntas frecuentes", "¿Dudas? Aquí las resolvemos")}
+          {faqs.map(f => (
+            <details key={f.q} className="ld-faq">
+              <summary>{f.q}</summary>
+              <p>{f.a}</p>
+            </details>
+          ))}
+        </div>
+      </div>
+
+      {/* ---- Llamado final ---- */}
+      <div style={{ padding: "72px 0", borderTop: "1px solid var(--border-soft)", background: "var(--card)", textAlign: "center" }}>
+        <div className="ld-wrap">
+          <div className="sg" style={{ fontSize: 30, fontWeight: 700, marginBottom: 10 }}>Pon tu refaccionaria en orden hoy</div>
+          <div style={{ color: "var(--muted)", fontSize: 14, marginBottom: 26 }}>Crea tu cuenta gratis y carga tu inventario en minutos.</div>
+          <button onClick={() => onEnter("register")} style={{ ...btnGold, padding: "13px 26px", fontSize: 14, display: "inline-flex" }}>
+            Crear mi cuenta <ArrowRight size={15} />
+          </button>
+        </div>
+      </div>
+
+      {/* ---- Pie de página ---- */}
+      <div style={{ borderTop: "1px solid var(--border-soft)", padding: "26px 0" }}>
+        <div className="ld-wrap" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--muted)" }}>
+            <Boxes size={16} color="var(--accent)" />
+            <span className="sg" style={{ fontWeight: 700, color: "var(--text)" }}>Refaccionaria<span style={{ color: "var(--accent)" }}>Cloud</span></span>
+            <span>· Inventario, ventas y contabilidad para refaccionarias</span>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--muted-2)" }}>© {new Date().getFullYear()} Aivora · aivoraia.com</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AuthScreen({ onAuthed, initialMode = "login", onBack }) {
+  const [mode, setMode] = useState(initialMode); // login | register | recover
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -476,6 +744,11 @@ function AuthScreen({ onAuthed }) {
               </>
             )}
           </div>
+          {onBack && (
+            <div style={{ textAlign: "center", marginTop: 10 }}>
+              <button onClick={onBack} style={{ background: "none", border: "none", color: "var(--muted-2)", fontSize: 11 }}>← Volver a la página principal</button>
+            </div>
+          )}
         </Card>
       </div>
     </ScreenShell>

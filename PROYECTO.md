@@ -64,6 +64,9 @@ El aislamiento entre negocios lo garantiza RLS por `org_id` (funciones `is_admin
 
 ## ✅ Funciones ya hechas
 
+- **Web pública (landing)**: los visitantes sin sesión ven una página de presentación del SaaS
+  (funciones, cómo funciona, precios, preguntas frecuentes) con botones a login/registro.
+  Está en el componente `LandingPage` dentro de `refaccionaria-motos.jsx`.
 - Multi-refaccionaria con login (Supabase Auth) y datos en la nube.
 - Panel de administrador: crear/editar/eliminar/suspender refaccionarias, asignar dueños,
   tablero global y resumen por negocio, buscador.
