@@ -417,9 +417,9 @@ function LandingPage({ onEnter }) {
     { n: "3", title: "Vende y controla", desc: "Cobra en el punto de venta y mira en el tablero cuánto vendes, cuánto gastas y cuánto ganas." },
   ];
   const plans = [
-    { name: "Básico", price: "$349", per: "/mes por sucursal", hl: false, items: ["1 refaccionaria", "Inventario y punto de venta", "Contabilidad y gráficas", "Avisos de stock", "Soporte por correo"] },
-    { name: "Profesional", price: "$549", per: "/mes por sucursal", hl: true, items: ["Todo lo del plan Básico", "Asistente con IA", "Importador de facturas (CSV/XML/PDF)", "Tickets con tu logo", "Soporte prioritario"] },
-    { name: "Cadena", price: "A la medida", per: "", hl: false, items: ["Varias sucursales", "Tablero global del grupo", "Acompañamiento en la carga inicial", "Facturación consolidada"] },
+    { name: "Básico", price: "$299", per: "MXN/mes", hl: false, items: ["Hasta 300 productos en inventario", "1 usuario", "Tablero con métricas del mes", "Inventario manual + importación CSV", "Punto de venta con ticket", "Alertas de stock bajo", "Soporte WhatsApp en horario hábil"] },
+    { name: "Pro", price: "$599", per: "MXN/mes", hl: true, badge: "⭐ Más popular", items: ["Hasta 1,500 productos", "3 usuarios", "Todo lo del Plan Básico", "Módulo de gastos completo", "Contabilidad con histórico", "Asistente IA para inventario", "Importación de facturas XML, CSV y PDF", "Soporte prioritario WhatsApp"] },
+    { name: "Elite", price: "$999", per: "MXN/mes", hl: false, items: ["Productos ilimitados", "Usuarios ilimitados", "Todo lo del Plan Pro", "Onboarding en persona o videollamada", "Soporte dedicado mismo día", "Configuración inicial incluida"], soon: "Catálogo público con agente IA (próximamente)" },
   ];
   const faqs = [
     { q: "¿Necesito instalar algo?", a: "No. Funciona en el navegador de cualquier computadora, tablet o celular con internet. Tus datos se guardan en la nube y puedes entrar desde donde estés." },
@@ -598,7 +598,7 @@ function LandingPage({ onEnter }) {
                 border: p.hl ? "1px solid var(--accent)" : "1px solid var(--border)",
                 boxShadow: p.hl ? "0 12px 40px #d4af3722" : "none", position: "relative",
               }}>
-                {p.hl && <div style={{ position: "absolute", top: -11, left: "50%", transform: "translateX(-50%)", background: "var(--accent)", color: "#0c1118", fontSize: 11, fontWeight: 700, padding: "3px 12px", borderRadius: 999 }}>Recomendado</div>}
+                {p.hl && <div style={{ position: "absolute", top: -11, left: "50%", transform: "translateX(-50%)", background: "var(--accent)", color: "#0c1118", fontSize: 11, fontWeight: 700, padding: "3px 12px", borderRadius: 999, whiteSpace: "nowrap" }}>{p.badge || "Recomendado"}</div>}
                 <div className="sg" style={{ fontSize: 15, fontWeight: 700, color: p.hl ? "var(--accent)" : "var(--text)" }}>{p.name}</div>
                 <div style={{ margin: "12px 0 16px" }}>
                   <span className="sg" style={{ fontSize: 32, fontWeight: 700 }}>{p.price}</span>
@@ -610,9 +610,14 @@ function LandingPage({ onEnter }) {
                       <Check size={14} color="#2ecc71" style={{ flexShrink: 0, marginTop: 2 }} /> {it}
                     </span>
                   ))}
+                  {p.soon && (
+                    <span style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 13, color: "var(--muted)", fontStyle: "italic" }}>
+                      <span style={{ flexShrink: 0, fontSize: 13, lineHeight: "18px" }}>🔜</span> {p.soon}
+                    </span>
+                  )}
                 </div>
                 <button onClick={() => onEnter("register")} style={{ ...(p.hl ? btnGold : btnGhost), width: "100%", justifyContent: "center", marginTop: "auto" }}>
-                  {p.name === "Cadena" ? "Contáctanos" : "Empezar"}
+                  Empezar
                 </button>
               </div>
             ))}
