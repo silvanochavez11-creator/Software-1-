@@ -1196,16 +1196,6 @@ function Tablero({ inventoryValue, inventoryRetail, lowStock, monthRevenue, mont
     return Object.values(map).sort((a, b) => a.k.localeCompare(b.k)).slice(-GRAN_KEEP[gran]);
   }, [sales, expenses, gran]);
 
-  const topProducts = useMemo(() => {
-    const map = {};
-    for (const s of sales) for (const it of s.items) {
-      if (!map[it.name]) map[it.name] = { name: it.name, qty: 0, revenue: 0 };
-      map[it.name].qty += it.qty;
-      map[it.name].revenue += it.qty * it.price;
-    }
-    return Object.values(map).sort((a, b) => b.qty - a.qty).slice(0, 5);
-  }, [sales]);
-
   const potentialMargin = inventoryRetail - inventoryValue;
 
   return (
@@ -1260,18 +1250,70 @@ function Tablero({ inventoryValue, inventoryRetail, lowStock, monthRevenue, mont
         <EmptyState text="Registra tu primera venta en 'Punto de venta' para ver el tablero cobrar vida." />
       )}
 
-      {topProducts.length > 0 && (
-        <Card>
-          <SectionTitle icon={TrendingUp}>Más vendidos</SectionTitle>
-          {topProducts.map(p => (
-            <div key={p.name} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--border-soft)", fontSize: 13 }}>
-              <span>{p.name}</span>
-              <span style={{ color: "var(--muted)" }}>{p.qty} u · {fmt0(p.revenue)}</span>
-            </div>
-          ))}
-        </Card>
-      )}
+      <TopVendidos sales={sales} />
     </div>
+  );
+}
+
+/* ---------- Top 5 piezas más vendidas (independiente, por día/semana/mes) ---------- */
+function TopVendidos({ sales }) {
+  const [period, setPeriod] = useState("mes"); // hoy | semana | mes
+  const inPeriod = (dateStr) => {
+    if (period === "hoy") return dateStr.slice(0, 10) === todayStr();
+    if (period === "semana") return weekStart(dateStr) === weekStart(todayStr());
+    return dateStr.slice(0, 7) === todayStr().slice(0, 7); // mes
+  };
+  const periodLabel = { hoy: "hoy", semana: "esta semana", mes: "este mes" }[period];
+
+  const top = useMemo(() => {
+    const map = {};
+    for (const s of sales) {
+      if (!inPeriod(s.date)) continue;
+      for (const it of s.items) {
+        if (!map[it.name]) map[it.name] = { name: it.name, qty: 0, revenue: 0 };
+        map[it.name].qty += it.qty;
+        map[it.name].revenue += it.qty * it.price;
+      }
+    }
+    return Object.values(map).sort((a, b) => b.qty - a.qty).slice(0, 5);
+  }, [sales, period]);
+
+  const maxQty = top[0]?.qty || 1;
+  const medal = ["#f2c94c", "#c8c8d0", "#cd8f52"]; // oro, plata, bronce
+
+  return (
+    <Card>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+        <SectionTitle icon={TrendingUp}>Top 5 más vendidas ({periodLabel})</SectionTitle>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["hoy", "Hoy"], ["semana", "Semana"], ["mes", "Mes"]].map(([id, label]) => (
+            <button key={id} onClick={() => setPeriod(id)} style={{
+              padding: "6px 12px", borderRadius: 8, border: "1px solid var(--border)",
+              background: period === id ? "var(--accent-soft)" : "transparent",
+              color: period === id ? "var(--accent)" : "var(--muted)", fontWeight: 700, fontSize: 12
+            }}>{label}</button>
+          ))}
+        </div>
+      </div>
+      {top.length > 0 ? top.map((p, i) => (
+        <div key={p.name} style={{ padding: "9px 0", borderBottom: i < top.length - 1 ? "1px solid var(--border-soft)" : "none" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, marginBottom: 6, gap: 10 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
+              <span style={{
+                flexShrink: 0, width: 20, height: 20, borderRadius: "50%", fontSize: 11, fontWeight: 800,
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                background: i < 3 ? medal[i] : "var(--border-soft)", color: i < 3 ? "#1a1a1a" : "var(--muted)"
+              }}>{i + 1}</span>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
+            </span>
+            <span style={{ color: "var(--muted)", flexShrink: 0, fontWeight: 600 }}>{p.qty} u · {fmt0(p.revenue)}</span>
+          </div>
+          <div style={{ height: 6, background: "var(--border-soft)", borderRadius: 4, overflow: "hidden" }}>
+            <div style={{ width: `${(p.qty / maxQty) * 100}%`, height: "100%", background: "var(--accent)", borderRadius: 4 }} />
+          </div>
+        </div>
+      )) : <EmptyState text={`Sin ventas ${periodLabel}. Cambia de periodo o registra una venta.`} />}
+    </Card>
   );
 }
 
