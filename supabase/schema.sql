@@ -13,12 +13,16 @@ create table if not exists public.organizations (
   accent            text default '#d4af37', -- color de marca
   status            text default 'active',  -- active | suspended
   default_min_stock int default 0,          -- stock mínimo por defecto del negocio
-  theme             text default 'dark',     -- tema de la interfaz: dark | light
+  theme             text default 'dark',    -- tema de la interfaz: dark | light
+  plan              text default 'basico',  -- plan contratado: basico | pro | elite
+  paid_until        date,                   -- pagado hasta (control manual de cobranza)
   created_at        timestamptz default now()
 );
 -- Para bases ya creadas: agrega las columnas si faltan
 alter table public.organizations add column if not exists default_min_stock int default 0;
 alter table public.organizations add column if not exists theme text default 'dark';
+alter table public.organizations add column if not exists plan text default 'basico';
+alter table public.organizations add column if not exists paid_until date;
 
 -- Espejo de auth.users: guarda el rol de plataforma (super-admin o no)
 create table if not exists public.profiles (
@@ -108,6 +112,70 @@ returns boolean language sql stable security definer set search_path = public as
     where org_id = target and user_id = auth.uid() and role = 'owner'
   );
 $$;
+
+-- ---------- Límites por plan (se aplican en la base, no solo en la app) -----
+
+-- Límite de productos según el plan del negocio
+create or replace function public.parts_limit_of(target uuid)
+returns int language sql stable security definer set search_path = public as $$
+  select case coalesce(o.plan, 'basico')
+    when 'basico' then 300
+    when 'pro'    then 1500
+    else null   -- elite: sin límite
+  end from public.organizations o where o.id = target;
+$$;
+
+create or replace function public.enforce_parts_limit()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare lim int; cnt int;
+begin
+  lim := public.parts_limit_of(new.org_id);
+  if lim is not null then
+    select count(*) into cnt from public.parts where org_id = new.org_id;
+    if cnt > lim then
+      raise exception 'Límite de productos del plan alcanzado (% piezas). Mejora tu plan para agregar más.', lim;
+    end if;
+  end if;
+  return new;
+end; $$;
+drop trigger if exists parts_limit on public.parts;
+create trigger parts_limit after insert on public.parts
+  for each row execute function public.enforce_parts_limit();
+
+-- Límite de usuarios según el plan del negocio
+create or replace function public.enforce_users_limit()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare lim int; cnt int;
+begin
+  select case coalesce(o.plan, 'basico') when 'basico' then 1 when 'pro' then 3 else null end
+    into lim from public.organizations o where o.id = new.org_id;
+  if lim is not null then
+    select count(*) into cnt from public.memberships where org_id = new.org_id;
+    if cnt > lim then
+      raise exception 'Límite de usuarios del plan alcanzado (%). Mejora el plan para agregar más.', lim;
+    end if;
+  end if;
+  return new;
+end; $$;
+drop trigger if exists users_limit on public.memberships;
+create trigger users_limit after insert on public.memberships
+  for each row execute function public.enforce_users_limit();
+
+-- Solo el administrador de la plataforma puede cambiar plan, pago y estado.
+-- Si un dueño actualiza su negocio (nombre, logo...), estos campos se conservan.
+create or replace function public.protect_org_fields()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_admin() then
+    new.plan       := old.plan;
+    new.paid_until := old.paid_until;
+    new.status     := old.status;
+  end if;
+  return new;
+end; $$;
+drop trigger if exists org_protect on public.organizations;
+create trigger org_protect before update on public.organizations
+  for each row execute function public.protect_org_fields();
 
 -- ---------- Crear el profile automáticamente al registrarse ----------------
 

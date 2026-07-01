@@ -85,6 +85,16 @@ function setFavicon(href) {
   } catch (e) {}
 }
 
+// Planes de Aivoraia y sus límites. null = sin límite.
+// Deben coincidir con los triggers de la base (supabase/schema.sql).
+const PLANS = {
+  basico: { id: "basico", label: "Básico", price: 299, color: "#8a93a3", maxParts: 300, maxUsers: 1, expenses: false, history: false, ai: false },
+  pro: { id: "pro", label: "Pro", price: 599, color: "#55AEEA", maxParts: 1500, maxUsers: 3, expenses: true, history: true, ai: true },
+  elite: { id: "elite", label: "Elite", price: 999, color: "#d4af37", maxParts: null, maxUsers: null, expenses: true, history: true, ai: true },
+};
+const planOf = (org) => PLANS[org?.plan] || PLANS.basico;
+const isPaymentDue = (org) => !!org?.paidUntil && org.paidUntil < todayStr();
+
 // Colores de marca Aivoraia: azul #1F5FD0 · cian #55AEEA · tinta #12151C
 const DEFAULT_ACCENT = "#55AEEA";
 const ACCENT_PRESETS = ["#55AEEA", "#1F5FD0", "#d4af37", "#e2574c", "#2ecc71", "#9b59b6", "#e8852b", "#ec4899"];
@@ -234,8 +244,8 @@ const db = {
 };
 
 /* ---- Mapeo entre la forma de la app (camelCase) y las columnas de la BD ---- */
-const orgFromDb = (r) => ({ id: r.id, name: r.name, logo: r.logo_url || "", accent: r.accent || DEFAULT_ACCENT, defaultMin: Number(r.default_min_stock) || 0, status: r.status || "active", theme: r.theme || "dark", createdAt: (r.created_at || "").slice(0, 10) });
-const orgToDb = (o) => { const r = { name: o.name, logo_url: o.logo || null, accent: o.accent || DEFAULT_ACCENT }; if (o.defaultMin != null) r.default_min_stock = Number(o.defaultMin) || 0; if (o.theme != null) r.theme = o.theme; return r; };
+const orgFromDb = (r) => ({ id: r.id, name: r.name, logo: r.logo_url || "", accent: r.accent || DEFAULT_ACCENT, defaultMin: Number(r.default_min_stock) || 0, status: r.status || "active", theme: r.theme || "dark", plan: PLANS[r.plan] ? r.plan : "basico", paidUntil: r.paid_until || "", createdAt: (r.created_at || "").slice(0, 10) });
+const orgToDb = (o) => { const r = { name: o.name, logo_url: o.logo || null, accent: o.accent || DEFAULT_ACCENT }; if (o.defaultMin != null) r.default_min_stock = Number(o.defaultMin) || 0; if (o.theme != null) r.theme = o.theme; if (o.plan != null) r.plan = PLANS[o.plan] ? o.plan : "basico"; if (o.paidUntil !== undefined) r.paid_until = o.paidUntil || null; return r; };
 
 const partFromDb = (r) => ({ id: r.id, sku: r.sku || "", name: r.name, brand: r.brand || "", category: r.category || "Otro", compat: r.compat || "", stock: Number(r.stock) || 0, minStock: Number(r.min_stock) || 0, cost: Number(r.cost) || 0, price: Number(r.price) || 0 });
 const partToDb = (p, org_id) => ({ id: p.id, org_id, sku: p.sku || null, name: p.name, brand: p.brand || null, category: p.category || null, compat: p.compat || null, stock: Number(p.stock) || 0, min_stock: Number(p.minStock) || 0, cost: Number(p.cost) || 0, price: Number(p.price) || 0 });
@@ -872,7 +882,7 @@ function OrgChooser({ orgs, onPick, onSignOut }) {
 
 /* ---------- Panel de administrador (multi-refaccionaria) ---------- */
 function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
-  const blank = { name: "", logo: "", accent: DEFAULT_ACCENT };
+  const blank = { name: "", logo: "", accent: DEFAULT_ACCENT, plan: "basico", paidUntil: "" };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [delId, setDelId] = useState(null);
@@ -933,14 +943,15 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
     if (!form.name.trim()) return;
     setBusy(true); setErr(null);
     try {
-      if (editId) await db.update("organizations", editId, orgToDb({ name: form.name.trim(), logo: form.logo, accent }));
-      else await db.insert("organizations", orgToDb({ name: form.name.trim(), logo: form.logo, accent }));
+      const payload = orgToDb({ name: form.name.trim(), logo: form.logo, accent, plan: form.plan, paidUntil: form.paidUntil });
+      if (editId) await db.update("organizations", editId, payload);
+      else await db.insert("organizations", payload);
       setForm(blank); setEditId(null);
       await reload();
     } catch (e) { setErr(e.message || "No se pudo guardar"); }
     finally { setBusy(false); }
   };
-  const edit = (o) => { setEditId(o.id); setForm({ name: o.name, logo: o.logo || "", accent: o.accent || DEFAULT_ACCENT }); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  const edit = (o) => { setEditId(o.id); setForm({ name: o.name, logo: o.logo || "", accent: o.accent || DEFAULT_ACCENT, plan: o.plan || "basico", paidUntil: o.paidUntil || "" }); window.scrollTo({ top: 0, behavior: "smooth" }); };
   const remove = async (id) => {
     setBusy(true); setErr(null);
     try { await db.remove("organizations", id); setDelId(null); if (editId === id) { setEditId(null); setForm(blank); } await reload(); await loadUsers(); }
@@ -949,6 +960,14 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
   };
   const assign = async (userId, orgId) => {
     if (!orgId) return;
+    const target = orgs.find(o => o.id === orgId);
+    const lim = planOf(target).maxUsers;
+    const current = memberships.filter(m => m.org_id === orgId).length;
+    if (lim != null && current >= lim) {
+      setErr(`"${target?.name}" ya tiene ${current} de ${lim} usuario(s) que permite su plan ${planOf(target).label}. Mejora el plan para asignar más.`);
+      return;
+    }
+    setErr(null);
     try { await db.insert("memberships", { user_id: userId, org_id: orgId, role: "owner" }); await loadUsers(); }
     catch (e) { setErr(e.message || "No se pudo asignar"); }
   };
@@ -1011,6 +1030,33 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
                 </div>
               </div>
 
+              {/* Plan y cobranza */}
+              <div style={{ marginTop: 16 }}>
+                <label style={lbl}>Plan contratado</label>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {Object.values(PLANS).map(p => (
+                    <button key={p.id} onClick={() => setForm(f => ({ ...f, plan: p.id }))} style={{
+                      padding: "8px 14px", borderRadius: 9, fontSize: 12, fontWeight: 700, textAlign: "left",
+                      border: `1px solid ${form.plan === p.id ? p.color : "var(--border)"}`,
+                      background: form.plan === p.id ? p.color + "22" : "transparent",
+                      color: form.plan === p.id ? p.color : "var(--muted)",
+                    }}>
+                      {p.label} · ${p.price}/mes
+                      <div style={{ fontSize: 10, fontWeight: 500, marginTop: 2, color: "var(--muted)" }}>
+                        {p.maxParts ? `Hasta ${p.maxParts.toLocaleString()} productos` : "Productos ilimitados"} · {p.maxUsers ? `${p.maxUsers} usuario${p.maxUsers > 1 ? "s" : ""}` : "usuarios ilimitados"}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <label style={lbl}>Pagado hasta (déjalo vacío si no llevas control de cobro)</label>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input type="date" value={form.paidUntil} onChange={e => setForm(f => ({ ...f, paidUntil: e.target.value }))} />
+                  {form.paidUntil && <button onClick={() => setForm(f => ({ ...f, paidUntil: "" }))} style={{ ...btnGhost, padding: "6px 10px", fontSize: 11 }}>Quitar</button>}
+                </div>
+              </div>
+
               {/* Vista previa */}
               <div style={{ marginTop: 16 }}>
                 <label style={lbl}>Vista previa</label>
@@ -1066,6 +1112,10 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
             {filteredOrgs.map(o => {
               const s = stats[o.id] || { parts: 0, value: 0, low: 0, salesMonth: 0 };
               const suspended = o.status === "suspended";
+              const plan = planOf(o);
+              const userCount = memberships.filter(m => m.org_id === o.id).length;
+              const partsNearLimit = plan.maxParts != null && s.parts >= plan.maxParts * 0.9;
+              const overdue = isPaymentDue(o);
               return (
                 <div key={o.id} style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 14, padding: 16, borderTop: `3px solid ${suspended ? "var(--muted-2)" : (o.accent || DEFAULT_ACCENT)}`, opacity: suspended ? 0.6 : 1 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
@@ -1073,11 +1123,17 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
                       ? <img src={o.logo} alt="" style={{ width: 42, height: 42, borderRadius: 10, objectFit: "cover" }} />
                       : <div style={{ width: 42, height: 42, borderRadius: 10, background: (o.accent || DEFAULT_ACCENT) + "22", display: "flex", alignItems: "center", justifyContent: "center" }}><Boxes size={22} color={o.accent || DEFAULT_ACCENT} /></div>}
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="sg" style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{o.name}</div>
-                      <div style={{ fontSize: 11, color: "var(--muted-2)", display: "flex", alignItems: "center", gap: 5 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                        <div className="sg" style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{o.name}</div>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: plan.color, border: `1px solid ${plan.color}`, borderRadius: 6, padding: "1px 7px", flexShrink: 0 }}>{plan.label}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--muted-2)", display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                         {suspended
                           ? <span style={{ color: "#e25c5c", fontWeight: 700 }}>● Suspendida</span>
                           : <><span style={{ width: 10, height: 10, borderRadius: 3, background: o.accent || DEFAULT_ACCENT, display: "inline-block" }} />{o.createdAt || ""}</>}
+                        {overdue
+                          ? <span style={{ color: "#e25c5c", fontWeight: 700 }}>· Pago vencido ({o.paidUntil})</span>
+                          : o.paidUntil && <span style={{ color: "#2ecc71" }}>· Pagado hasta {o.paidUntil}</span>}
                       </div>
                     </div>
                   </div>
@@ -1086,8 +1142,8 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
                     <MiniKPI label="Ventas del mes" value={fmt0(s.salesMonth)} color="#2ecc71" />
                     <MiniKPI label="Inventario" value={fmt0(s.value)} color="#3fa9f5" />
-                    <MiniKPI label="Piezas" value={`${s.parts}`} color="var(--text)" />
-                    <MiniKPI label="Bajo mínimo" value={`${s.low}`} color={s.low > 0 ? "#e8a13a" : "var(--muted-2)"} />
+                    <MiniKPI label="Productos" value={plan.maxParts != null ? `${s.parts}/${plan.maxParts}` : `${s.parts}`} color={partsNearLimit ? "#e8a13a" : "var(--text)"} />
+                    <MiniKPI label="Usuarios" value={plan.maxUsers != null ? `${userCount}/${plan.maxUsers}` : `${userCount}`} color={plan.maxUsers != null && userCount >= plan.maxUsers ? "#e8a13a" : "var(--text)"} />
                   </div>
 
                   <div style={{ display: "flex", gap: 6 }}>
@@ -1173,6 +1229,7 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
 function ShopApp({ org: orgProp, onExit, isAdmin }) {
   const [org, setOrg] = useState(orgProp);
   const K = (k) => `refa:org:${org.id}:${k}`;
+  const plan = planOf(org);
   const accent = org.accent || "#d4af37";
   const light = org.theme === "light";
   const [tab, setTab] = useState("tablero");
@@ -1189,7 +1246,13 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
 
   const saveOrg = async (patch) => {
     const updated = { ...org, ...patch };
-    await db.update("organizations", org.id, orgToDb(updated));
+    // Solo se envían las columnas que el dueño realmente cambió
+    // (plan, pago y estado los maneja únicamente el administrador).
+    const COL = { name: "name", logo: "logo_url", accent: "accent", defaultMin: "default_min_stock", theme: "theme" };
+    const full = orgToDb(updated);
+    const payload = {};
+    for (const k of Object.keys(patch)) { if (COL[k]) payload[COL[k]] = full[COL[k]]; }
+    await db.update("organizations", org.id, Object.keys(payload).length ? payload : full);
     setOrg(updated);
   };
   // Aplica un mínimo a las piezas que aún están en 0 (las cargadas sin mínimo)
@@ -1299,7 +1362,10 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
               ? <img src={org.logo} alt={org.name} style={{ width: 44, height: 44, borderRadius: 10, objectFit: "cover", border: "1px solid var(--border)" }} />
               : <div style={{ width: 44, height: 44, borderRadius: 10, background: "var(--accent-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}><Boxes size={24} color="var(--accent)" /></div>}
             <div>
-              <div className="sg" style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.5 }}>{org.name}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div className="sg" style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.5 }}>{org.name}</div>
+                <span style={{ fontSize: 10, fontWeight: 700, color: plan.color, border: `1px solid ${plan.color}`, borderRadius: 6, padding: "1px 7px" }} title={`Plan ${plan.label}`}>{plan.label}</span>
+              </div>
               <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>Inventario y contabilidad en un solo lugar</div>
             </div>
           </div>
@@ -1335,17 +1401,18 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
             { id: "tablero", label: "Tablero", icon: BarChart3 },
             { id: "inventario", label: "Inventario", icon: Package },
             { id: "ventas", label: "Punto de venta", icon: ShoppingCart },
-            { id: "gastos", label: "Gastos", icon: Receipt },
+            { id: "gastos", label: "Gastos", icon: Receipt, locked: !plan.expenses },
             { id: "contabilidad", label: "Contabilidad", icon: Wallet },
-            { id: "asistente", label: "Asistente IA", icon: Sparkles },
+            { id: "asistente", label: "Asistente IA", icon: Sparkles, locked: !plan.ai },
           ].map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
+              title={t.locked ? "Disponible desde el plan Pro" : undefined}
               style={{
                 background: "none", border: "none", padding: "10px 14px", display: "flex", alignItems: "center", gap: 6,
                 color: tab === t.id ? "var(--accent)" : "var(--muted)", borderBottom: tab === t.id ? "2px solid var(--accent)" : "2px solid transparent",
-                fontSize: 13, fontWeight: 600, marginBottom: -1
+                fontSize: 13, fontWeight: 600, marginBottom: -1, opacity: t.locked ? 0.55 : 1
               }}>
-              <t.icon size={15} /> {t.label}
+              {t.locked ? <Lock size={13} /> : <t.icon size={15} />} {t.label}
             </button>
           ))}
         </div>
@@ -1360,19 +1427,21 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
           />
         )}
         {tab === "inventario" && (
-          <Inventario parts={parts} setParts={setParts} showToast={showToast} defaultMin={org.defaultMin || 0} />
+          <Inventario parts={parts} setParts={setParts} showToast={showToast} defaultMin={org.defaultMin || 0} maxParts={plan.maxParts} planLabel={plan.label} />
         )}
         {tab === "ventas" && (
           <PuntoDeVenta parts={parts} setParts={setParts} sales={sales} setSales={setSales} showToast={showToast} onTicket={setTicketSale} />
         )}
-        {tab === "gastos" && (
-          <Gastos expenses={expenses} setExpenses={setExpenses} showToast={showToast} />
+        {tab === "gastos" && (plan.expenses
+          ? <Gastos expenses={expenses} setExpenses={setExpenses} showToast={showToast} />
+          : <LockedFeature feature="El módulo de gastos" />
         )}
         {tab === "contabilidad" && (
-          <Contabilidad sales={sales} expenses={expenses} />
+          <Contabilidad sales={sales} expenses={expenses} allowHistory={plan.history} />
         )}
-        {tab === "asistente" && (
-          <Asistente parts={parts} setParts={setParts} showToast={showToast} defaultMin={org.defaultMin || 0} />
+        {tab === "asistente" && (plan.ai
+          ? <Asistente parts={parts} setParts={setParts} showToast={showToast} defaultMin={org.defaultMin || 0} org={org} maxParts={plan.maxParts} />
+          : <LockedFeature feature="El Asistente IA" />
         )}
       </div>
 
@@ -1402,6 +1471,21 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
 }
 
 /* ---------- Shared bits ---------- */
+// Pantalla que ve un negocio cuando su plan no incluye la función
+function LockedFeature({ feature, planName = "Pro" }) {
+  return (
+    <Card style={{ textAlign: "center", padding: "48px 24px" }}>
+      <div style={{ width: 54, height: 54, borderRadius: 14, background: "var(--accent-soft)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+        <Lock size={26} color="var(--accent)" />
+      </div>
+      <div className="sg" style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>{feature} está disponible desde el plan {planName}</div>
+      <div style={{ fontSize: 13, color: "var(--muted)", maxWidth: 420, margin: "0 auto", lineHeight: 1.6 }}>
+        Contacta a Aivoraia para mejorar tu plan y activar esta función al instante, sin perder ninguno de tus datos.
+      </div>
+    </Card>
+  );
+}
+
 function MiniStat({ label, value, color }) {
   return (
     <div style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, padding: "8px 14px" }}>
@@ -1600,7 +1684,8 @@ function TopVendidos({ sales }) {
 /* ---------- Inventario ---------- */
 const emptyPart = () => ({ sku: "", name: "", brand: "", category: PART_CATS[0], compat: "", stock: "", minStock: "", cost: "", price: "" });
 
-function Inventario({ parts, setParts, showToast, defaultMin = 0 }) {
+function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = null, planLabel = "" }) {
+  const roomLeft = maxParts != null ? Math.max(0, maxParts - parts.length) : Infinity;
   const [form, setForm] = useState(emptyPart());
   const [editId, setEditId] = useState(null);
   const [q, setQ] = useState("");
@@ -1624,6 +1709,7 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0 }) {
 
   const save = () => {
     if (!form.name.trim()) return showToast("Ponle nombre a la refacción");
+    if (!editId && roomLeft <= 0) return showToast(`Tu plan ${planLabel} permite hasta ${maxParts} productos. Mejora tu plan para agregar más.`);
     const part = {
       ...form,
       name: form.name.trim(),
@@ -1717,8 +1803,12 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0 }) {
           const cols = Object.keys(rows[0] || {}).filter(Boolean).join(", ") || "ninguna";
           return showToast(`No encontré la columna de "nombre". Columnas detectadas: ${cols}`);
         }
-        setParts(prev => [...added, ...prev]);
-        showToast(`${added.length} refacciones importadas`);
+        if (roomLeft <= 0) return showToast(`Tu plan ${planLabel} permite hasta ${maxParts} productos y ya está lleno. Mejora tu plan para importar más.`);
+        const toAdd = added.length > roomLeft ? added.slice(0, roomLeft) : added;
+        setParts(prev => [...toAdd, ...prev]);
+        showToast(toAdd.length < added.length
+          ? `Importé ${toAdd.length} de ${added.length}: tu plan ${planLabel} permite hasta ${maxParts} productos.`
+          : `${toAdd.length} refacciones importadas`);
       },
       error: () => showToast("No pude leer el archivo"),
     });
@@ -1764,7 +1854,12 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0 }) {
 
       <Card>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-          <SectionTitle icon={Package}>Inventario ({parts.length})</SectionTitle>
+          <SectionTitle icon={Package}>Inventario ({maxParts != null ? `${parts.length}/${maxParts}` : parts.length})</SectionTitle>
+          {maxParts != null && parts.length >= maxParts * 0.9 && (
+            <span style={{ fontSize: 11, color: "#e8a13a", fontWeight: 600 }}>
+              {roomLeft <= 0 ? "Límite del plan alcanzado" : `Te quedan ${roomLeft} espacios en tu plan`}
+            </span>
+          )}
           <div style={{ flex: 1 }} />
           <div style={{ position: "relative" }}>
             <Search size={14} color="var(--muted-2)" style={{ position: "absolute", left: 10, top: 11 }} />
@@ -2065,8 +2160,8 @@ function Gastos({ expenses, setExpenses, showToast }) {
 }
 
 /* ---------- Contabilidad ---------- */
-function Contabilidad({ sales, expenses }) {
-  const [period, setPeriod] = useState("mes"); // mes | todo
+function Contabilidad({ sales, expenses, allowHistory = true }) {
+  const [period, setPeriod] = useState("mes"); // hoy | semana | mes | todo
   const [gran, setGran] = useState("month"); // day | week | month
 
   const inPeriod = (dateStr) => {
@@ -2110,13 +2205,18 @@ function Contabilidad({ sales, expenses }) {
   return (
     <div>
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-        {[["hoy", "Hoy"], ["semana", "Esta semana"], ["mes", "Este mes"], ["todo", "Histórico"]].map(([id, label]) => (
-          <button key={id} onClick={() => setPeriod(id)} style={{
-            padding: "8px 16px", borderRadius: 8, border: "1px solid var(--border)",
-            background: period === id ? "var(--accent-soft)" : "transparent", color: period === id ? "var(--accent)" : "var(--muted)",
-            fontWeight: 700, fontSize: 13
-          }}>{label}</button>
-        ))}
+        {[["hoy", "Hoy"], ["semana", "Esta semana"], ["mes", "Este mes"], ["todo", "Histórico"]].map(([id, label]) => {
+          const locked = id === "todo" && !allowHistory;
+          return (
+            <button key={id} onClick={() => locked ? null : setPeriod(id)}
+              title={locked ? "El histórico está disponible desde el plan Pro" : undefined}
+              style={{
+                padding: "8px 16px", borderRadius: 8, border: "1px solid var(--border)",
+                background: period === id ? "var(--accent-soft)" : "transparent", color: period === id ? "var(--accent)" : "var(--muted)",
+                fontWeight: 700, fontSize: 13, opacity: locked ? 0.5 : 1, display: "flex", alignItems: "center", gap: 6,
+              }}>{locked && <Lock size={12} />}{label}</button>
+          );
+        })}
       </div>
 
       <Card style={{ marginBottom: 18 }}>
@@ -2180,7 +2280,7 @@ const sanitizeField = (field, val) =>
   NUMERIC_FIELDS.includes(field) ? Math.max(0, (field === "stock" || field === "minStock" ? parseInt(val) : parseFloat(val)) || 0) : String(val ?? "");
 const showVal = (field, v) => MONEY_FIELDS.has(field) ? fmt(v) : String(v);
 
-function Asistente({ parts, setParts, showToast, defaultMin = 0 }) {
+function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, maxParts = null }) {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState(null);
@@ -2221,7 +2321,7 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0 }) {
       const response = await fetch("/api/ai", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${_session?.access_token || ""}` },
-        body: JSON.stringify({ system: SYSTEM, user: `INVENTARIO ACTUAL:\n${JSON.stringify(refList)}\n\nINSTRUCCIÓN:\n${instruction}` }),
+        body: JSON.stringify({ org_id: org?.id, system: SYSTEM, user: `INVENTARIO ACTUAL:\n${JSON.stringify(refList)}\n\nINSTRUCCIÓN:\n${instruction}` }),
       });
       const data = await response.json();
       if (!response.ok) { setError(data.error || "No se pudo procesar. Revisa que la IA esté configurada en Vercel."); return; }
@@ -2288,6 +2388,14 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0 }) {
 
   const confirm = () => {
     const items = preview.filter(p => p.include);
+    if (maxParts != null) {
+      const creates = items.filter(p => p.op === "create").length;
+      const deletes = items.filter(p => p.op === "delete").length;
+      if (parts.length + creates - deletes > maxParts) {
+        showToast(`Tu plan permite hasta ${maxParts} productos; estas altas lo rebasarían. Desmarca algunas o mejora tu plan.`);
+        return;
+      }
+    }
     let created = 0, updated = 0, restocked = 0, deleted = 0;
     setParts(prev => {
       let next = [...prev];

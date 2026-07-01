@@ -62,6 +62,26 @@ El aislamiento entre negocios lo garantiza RLS por `org_id` (funciones `is_admin
 
 > ⚠️ NUNCA poner en el frontend ni compartir: la llave `service_role` de Supabase ni la `sk-...` de OpenAI.
 
+## 💳 Planes y límites (SaaS)
+
+Cada refaccionaria tiene un **plan** (`basico | pro | elite`) y una fecha **pagado hasta**
+(columnas `plan` y `paid_until` en `organizations`). El admin los asigna desde su panel.
+
+| Límite / función | Básico $299 | Pro $599 | Elite $999 |
+|---|---|---|---|
+| Productos | 300 | 1,500 | Ilimitados |
+| Usuarios | 1 | 3 | Ilimitados |
+| Módulo de gastos | ❌ | ✔️ | ✔️ |
+| Contabilidad con histórico | ❌ (solo hoy/semana/mes) | ✔️ | ✔️ |
+| Asistente IA e importador de facturas | ❌ | ✔️ | ✔️ |
+
+Se aplican en 3 capas: UI (candados y topes), base de datos (triggers `parts_limit`,
+`users_limit`, `org_protect` — el dueño no puede auto-cambiarse el plan) y `/api/ai`
+(verifica sesión + plan pro/elite + negocio activo).
+
+> ⚠️ **Para bases ya creadas**: correr `supabase/migracion-planes.sql` en el SQL Editor.
+> Los negocios existentes quedan en Básico: asigna su plan real desde el panel de admin.
+
 ## ✅ Funciones ya hechas
 
 - **Web pública (landing)**: los visitantes sin sesión ven una página de presentación del SaaS
