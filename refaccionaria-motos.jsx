@@ -2574,7 +2574,8 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
           </label>
         </div>
         <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 8 }}>
-          El importador lee facturas de proveedor (incluyendo XML CFDI del SAT), listas CSV y PDFs con texto. Con las fotos, puedes retratar página por página tu libreta (hasta 12 fotos por tanda, con buena luz) y la IA convierte lo escrito en inventario para que lo revises antes de guardar.
+          El importador lee facturas de proveedor (incluyendo XML CFDI del SAT), listas CSV y PDFs con texto. Con las fotos, puedes retratar tu libreta página por página (hasta 12 fotos por tanda) y la IA convierte lo escrito en inventario para que lo revises antes de guardar.
+          <span style={{ display: "block", marginTop: 4, color: "var(--accent)" }}>📸 Consejo: toma las fotos DE CERCA, con buena luz y la letra grande y nítida — mejor dos fotos cercanas (mitad y mitad de la página) que una foto lejana de la página entera.</span>
         </div>
         {error && <div style={{ color: "#e25c5c", fontSize: 12, marginTop: 10 }}>{error}</div>}
         <datalist id="part-colors">{PART_COLORS.map(c => <option key={c} value={c} />)}</datalist>
