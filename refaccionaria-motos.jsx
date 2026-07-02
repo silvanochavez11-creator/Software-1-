@@ -1476,7 +1476,7 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
           : <LockedFeature feature="El módulo de gastos" />
         )}
         {tab === "contabilidad" && (
-          <Contabilidad sales={sales} expenses={expenses} allowHistory={plan.history} />
+          <Contabilidad sales={sales} expenses={expenses} allowHistory={plan.history} org={org} shop={shop} />
         )}
         {tab === "asistente" && (plan.ai
           ? <Asistente parts={parts} setParts={setParts} showToast={showToast} defaultMin={org.defaultMin || 0} org={org} maxParts={plan.maxParts} />
@@ -1725,6 +1725,22 @@ const emptyPart = () => ({ sku: "", name: "", brand: "", category: PART_CATS[0],
 
 function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = null, planLabel = "" }) {
   const roomLeft = maxParts != null ? Math.max(0, maxParts - parts.length) : Infinity;
+  const [brandFilter, setBrandFilter] = useState(null); // null = todas | "__none__" = sin marca | texto = marca
+
+  // Marcas existentes en el inventario (con cuántas piezas tiene cada una)
+  const brands = useMemo(() => {
+    const map = new Map();
+    for (const p of parts) {
+      const b = (p.brand || "").trim();
+      if (!b) continue;
+      const k = b.toLowerCase();
+      const cur = map.get(k) || { name: b, count: 0 };
+      cur.count += 1;
+      map.set(k, cur);
+    }
+    return [...map.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  }, [parts]);
+  const noBrandCount = useMemo(() => parts.filter(p => !(p.brand || "").trim()).length, [parts]);
   const [form, setForm] = useState(emptyPart());
   const [editId, setEditId] = useState(null);
   const [q, setQ] = useState("");
@@ -1740,11 +1756,14 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return parts;
-    return parts.filter(p =>
+    let base = parts;
+    if (brandFilter === "__none__") base = parts.filter(p => !(p.brand || "").trim());
+    else if (brandFilter) base = parts.filter(p => (p.brand || "").trim().toLowerCase() === brandFilter);
+    if (!s) return base;
+    return base.filter(p =>
       [p.name, p.sku, p.brand, p.category, p.compat, p.color].filter(Boolean).some(v => v.toLowerCase().includes(s))
     );
-  }, [parts, q]);
+  }, [parts, q, brandFilter]);
 
   const save = () => {
     if (!form.name.trim()) return showToast("Ponle nombre a la refacción");
@@ -1861,14 +1880,15 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
         <SectionTitle icon={editId ? Pencil : Plus}>{editId ? "Editar refacción" : "Agregar refacción"}</SectionTitle>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginBottom: 8 }}>
           <input placeholder="Nombre *" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
-          <input placeholder="SKU / código" value={form.sku} onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} />
-          <input placeholder="Marca (ej. Italika)" value={form.brand} onChange={e => setForm(f => ({ ...f, brand: e.target.value }))} />
+          <input placeholder="SKU / código (opcional)" value={form.sku} onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} />
+          <input placeholder="Marca (opcional)" list="part-brands" value={form.brand} onChange={e => setForm(f => ({ ...f, brand: e.target.value }))} />
           <select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>
             {PART_CATS.map(c => <option key={c}>{c}</option>)}
           </select>
-          <input placeholder="Compatibilidad (ej. FT150, DM200)" value={form.compat} onChange={e => setForm(f => ({ ...f, compat: e.target.value }))} />
-          <input placeholder="Color (ej. Rojo)" list="part-colors" value={form.color} onChange={e => setForm(f => ({ ...f, color: e.target.value }))} />
+          <input placeholder="Compatibilidad (opcional)" value={form.compat} onChange={e => setForm(f => ({ ...f, compat: e.target.value }))} />
+          <input placeholder="Color (opcional)" list="part-colors" value={form.color} onChange={e => setForm(f => ({ ...f, color: e.target.value }))} />
           <datalist id="part-colors">{PART_COLORS.map(c => <option key={c} value={c} />)}</datalist>
+          <datalist id="part-brands">{brands.map(b => <option key={b.name} value={b.name} />)}</datalist>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: 10 }}>
           <div><label style={lbl}>Stock</label><input type="number" placeholder="0" value={form.stock} onChange={e => setForm(f => ({ ...f, stock: e.target.value }))} style={{ width: "100%" }} /></div>
@@ -1914,6 +1934,23 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
             </button>
           )}
         </div>
+
+        {/* Filtro por marca */}
+        {brands.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+            {[{ id: null, label: `Todas (${parts.length})` },
+              ...brands.map(b => ({ id: b.name.toLowerCase(), label: `${b.name} (${b.count})` })),
+              ...(noBrandCount > 0 ? [{ id: "__none__", label: `Sin marca (${noBrandCount})` }] : [])
+            ].map(f => (
+              <button key={f.id ?? "all"} onClick={() => setBrandFilter(f.id)} style={{
+                padding: "5px 12px", borderRadius: 999, fontSize: 12, fontWeight: 700,
+                border: brandFilter === f.id ? "1px solid var(--accent)" : "1px solid var(--border)",
+                background: brandFilter === f.id ? "var(--accent-soft)" : "transparent",
+                color: brandFilter === f.id ? "var(--accent)" : "var(--muted)",
+              }}>{f.label}</button>
+            ))}
+          </div>
+        )}
 
         {wipeStep > 0 && (
           <div className="no-print" onClick={() => setWipeStep(0)}
@@ -2229,10 +2266,123 @@ function Gastos({ expenses, setExpenses, showToast }) {
   );
 }
 
+/* ---------- Reporte mensual imprimible (para el contador) ---------- */
+// Abre una ventana con el reporte en tamaño carta; desde ahí se imprime
+// o se guarda como PDF con el diálogo del navegador.
+function printMonthlyReport({ org, shop, sales, expenses, month }) {
+  const mSales = sales.filter(s => (s.date || "").slice(0, 7) === month);
+  const mExpenses = expenses.filter(e => (e.date || "").slice(0, 7) === month);
+  const revenue = mSales.reduce((a, s) => a + (Number(s.total) || 0), 0);
+  const cogs = mSales.reduce((a, s) => a + (Number(s.cogs) || 0), 0);
+  const gross = revenue - cogs;
+  const opex = mExpenses.reduce((a, e) => a + (Number(e.amount) || 0), 0);
+  const net = gross - opex;
+  const margin = revenue > 0 ? Math.round((gross / revenue) * 100) : 0;
+  const units = mSales.reduce((a, s) => a + (s.items || []).reduce((x, i) => x + (Number(i.qty) || 0), 0), 0);
+  const avgTicket = mSales.length ? revenue / mSales.length : 0;
+
+  const byCat = {};
+  for (const e of mExpenses) byCat[e.category] = (byCat[e.category] || 0) + (Number(e.amount) || 0);
+  const cats = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+
+  const counter = new Map();
+  for (const s of mSales) for (const i of (s.items || [])) {
+    const k = `${i.name}|${i.color || ""}`.toLowerCase();
+    const cur = counter.get(k) || { name: i.name + (i.color ? ` (${i.color})` : ""), qty: 0, money: 0 };
+    cur.qty += Number(i.qty) || 0; cur.money += (Number(i.qty) || 0) * (Number(i.price) || 0);
+    counter.set(k, cur);
+  }
+  const top = [...counter.values()].sort((a, b) => b.qty - a.qty).slice(0, 10);
+
+  const [y, m] = month.split("-").map(Number);
+  const monthLabel = new Date(Date.UTC(y, m - 1, 15)).toLocaleDateString("es-MX", { month: "long", year: "numeric", timeZone: "UTC" });
+  const bizName = escapeHtml(shop?.name || org?.name || "Refaccionaria");
+  const today = new Date().toLocaleDateString("es-MX", { day: "numeric", month: "long", year: "numeric" });
+
+  const row = (label, value, opts = {}) =>
+    `<tr${opts.strong ? ' class="strong"' : ""}><td>${label}</td><td class="num">${value}</td></tr>`;
+
+  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8">
+    <title>Reporte ${bizName} — ${escapeHtml(monthLabel)}</title>
+    <style>
+      @page { size: letter; margin: 16mm; }
+      body { font-family: Arial, Helvetica, sans-serif; color: #1b2430; font-size: 13px; margin: 0; }
+      h1 { font-size: 20px; margin: 0; } h2 { font-size: 14px; margin: 22px 0 8px; border-bottom: 2px solid #1b2430; padding-bottom: 4px; }
+      .head { display: flex; align-items: center; gap: 14px; border-bottom: 3px solid #1b2430; padding-bottom: 12px; }
+      .head img { max-height: 56px; max-width: 120px; object-fit: contain; }
+      .muted { color: #6b7480; font-size: 11px; }
+      table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+      td, th { padding: 6px 8px; border-bottom: 1px solid #d8dde6; text-align: left; }
+      th { font-size: 11px; text-transform: uppercase; color: #6b7480; }
+      .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .strong td { font-weight: bold; border-top: 2px solid #1b2430; }
+      .kpis { display: flex; gap: 10px; margin-top: 14px; }
+      .kpi { flex: 1; border: 1px solid #d8dde6; border-radius: 8px; padding: 10px 12px; }
+      .kpi .v { font-size: 17px; font-weight: bold; margin-top: 2px; }
+      .foot { margin-top: 26px; font-size: 10px; color: #6b7480; text-align: center; }
+    </style></head><body>
+    <div class="head">
+      ${org?.logo ? `<img src="${org.logo}" alt="">` : ""}
+      <div>
+        <h1>${bizName}</h1>
+        <div class="muted">${escapeHtml([shop?.address, shop?.phone ? `Tel. ${shop.phone}` : ""].filter(Boolean).join(" · "))}</div>
+        <div style="font-size:14px;margin-top:4px;">Reporte mensual de resultados — <b style="text-transform:capitalize;">${escapeHtml(monthLabel)}</b></div>
+      </div>
+    </div>
+
+    <div class="kpis">
+      <div class="kpi"><div class="muted">Ventas del mes</div><div class="v">${fmt(revenue)}</div></div>
+      <div class="kpi"><div class="muted">Utilidad neta</div><div class="v">${fmt(net)}</div></div>
+      <div class="kpi"><div class="muted">Núm. de ventas</div><div class="v">${mSales.length}</div></div>
+      <div class="kpi"><div class="muted">Piezas vendidas</div><div class="v">${units}</div></div>
+      <div class="kpi"><div class="muted">Ticket promedio</div><div class="v">${fmt(avgTicket)}</div></div>
+    </div>
+
+    <h2>Estado de resultados</h2>
+    <table>
+      ${row("Ventas (ingresos)", fmt(revenue))}
+      ${row("(−) Costo de mercancía vendida", fmt(cogs))}
+      ${row(`Utilidad bruta (margen ${margin}%)`, fmt(gross))}
+      ${row("(−) Gastos del negocio", fmt(opex))}
+      ${row("Utilidad neta", fmt(net), { strong: true })}
+    </table>
+
+    <h2>Gastos por categoría</h2>
+    ${cats.length === 0 ? '<div class="muted">Sin gastos registrados este mes.</div>' : `<table>
+      <tr><th>Categoría</th><th class="num">Monto</th></tr>
+      ${cats.map(([c, v]) => row(escapeHtml(c), fmt(v))).join("")}
+      ${row("Total de gastos", fmt(opex), { strong: true })}
+    </table>`}
+
+    <h2>Piezas más vendidas</h2>
+    ${top.length === 0 ? '<div class="muted">Sin ventas registradas este mes.</div>' : `<table>
+      <tr><th>Pieza</th><th class="num">Unidades</th><th class="num">Importe</th></tr>
+      ${top.map(t => `<tr><td>${escapeHtml(t.name)}</td><td class="num">${t.qty}</td><td class="num">${fmt(t.money)}</td></tr>`).join("")}
+    </table>`}
+
+    <div class="foot">Generado el ${escapeHtml(today)} con Aivoraia · aivoraia.com</div>
+    <script>window.onload = () => setTimeout(() => window.print(), 300);</scr` + `ipt>
+  </body></html>`;
+
+  const w = window.open("", "_blank", "width=820,height=980");
+  if (!w) return false;
+  w.document.write(html);
+  w.document.close();
+  return true;
+}
+
 /* ---------- Contabilidad ---------- */
-function Contabilidad({ sales, expenses, allowHistory = true }) {
+function Contabilidad({ sales, expenses, allowHistory = true, org = null, shop = null }) {
   const [period, setPeriod] = useState("mes"); // hoy | semana | mes | todo
   const [gran, setGran] = useState("month"); // day | week | month
+  const [repMonth, setRepMonth] = useState(todayStr().slice(0, 7)); // mes del reporte PDF
+
+  const doReport = () => {
+    const month = allowHistory ? repMonth : todayStr().slice(0, 7);
+    if (!month) return;
+    const ok = printMonthlyReport({ org, shop, sales, expenses, month });
+    if (!ok) alert("Tu navegador bloqueó la ventana del reporte. Permite las ventanas emergentes para este sitio e inténtalo de nuevo.");
+  };
 
   const inPeriod = (dateStr) => {
     if (period === "todo") return true;
@@ -2287,6 +2437,14 @@ function Contabilidad({ sales, expenses, allowHistory = true }) {
               }}>{locked && <Lock size={12} />}{label}</button>
           );
         })}
+        <div style={{ flex: 1 }} />
+        {/* Reporte mensual para el contador */}
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {allowHistory && <input type="month" value={repMonth} max={todayStr().slice(0, 7)} onChange={e => setRepMonth(e.target.value)} title="Mes del reporte" style={{ padding: "7px 9px" }} />}
+          <button onClick={doReport} style={{ ...btnGold, padding: "8px 14px" }} title="Genera el reporte del mes en tamaño carta, listo para imprimir o guardar como PDF y mandar al contador">
+            <Printer size={15} /> Reporte PDF
+          </button>
+        </div>
       </div>
 
       <Card style={{ marginBottom: 18 }}>
