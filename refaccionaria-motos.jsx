@@ -1199,8 +1199,32 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
   const [memberships, setMemberships] = useState([]);
   const [stats, setStats] = useState({});
   const [q, setQ] = useState("");
+  // Asistentes IA: indicaciones globales del agente de ventas del catálogo
+  const [agentPrompt, setAgentPrompt] = useState("");
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentMsg, setAgentMsg] = useState(null);
 
   const accent = form.accent || DEFAULT_ACCENT;
+
+  const loadAgentPrompt = async () => {
+    try {
+      const rows = await db.select("app_settings", "select=key,value&key=eq.catalog_agent_prompt");
+      setAgentPrompt(rows?.[0]?.value || "");
+    } catch (e) {}
+  };
+  const saveAgentPrompt = async () => {
+    setAgentBusy(true); setAgentMsg(null);
+    try {
+      await sbFetch("app_settings?on_conflict=key", {
+        method: "POST",
+        headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify([{ key: "catalog_agent_prompt", value: agentPrompt.trim() || null, updated_at: new Date().toISOString() }]),
+      });
+      setAgentMsg("Guardado. Todos los agentes de catálogo ya siguen estas indicaciones.");
+    } catch (e) {
+      setAgentMsg("No se pudo guardar. ¿Corriste la migración de Asistentes IA en Supabase?");
+    } finally { setAgentBusy(false); }
+  };
 
   const loadUsers = async () => {
     try {
@@ -1230,7 +1254,7 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
       setStats(map);
     } catch (e) {}
   };
-  useEffect(() => { loadUsers(); loadStats(); }, []);
+  useEffect(() => { loadUsers(); loadStats(); loadAgentPrompt(); }, []);
 
   const toggleStatus = async (o) => {
     setErr(null);
@@ -1506,6 +1530,38 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
               </div>
             );
           })}
+        </Card>
+
+        {/* Asistentes IA */}
+        <div style={{ height: 26 }} />
+        <SectionTitle icon={Sparkles}>Asistentes IA</SectionTitle>
+        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>
+          Configuración del <b>agente de ventas del catálogo público</b>. Por ahora es global: el mismo proceso aplica a todas las refaccionarias con catálogo (plan Elite).
+        </div>
+        <Card>
+          <label style={lbl}>Reglas fijas del agente (siempre activas, no se pueden desactivar)</label>
+          <div style={{ fontSize: 12, color: "var(--text-2)", lineHeight: 1.7, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}>
+            ✔️ Solo habla de las piezas del inventario publicable del negocio — nunca inventa piezas, precios ni existencias.<br />
+            ✔️ Nunca revela costos, precios de mayoreo, ventas ni datos internos.<br />
+            ✔️ Respeta la opción "mostrar precios" de cada negocio.<br />
+            ✔️ Si una pieza está agotada lo dice y ofrece alternativas compatibles.<br />
+            ✔️ Cierra los pedidos canalizando al WhatsApp del negocio.<br />
+            ✔️ Respuestas cortas y amables; máximo 400 mensajes al día por negocio (control de gasto).
+          </div>
+          <label style={lbl}>Indicaciones del proceso de ventas (las escribes tú y se suman a las reglas fijas)</label>
+          <textarea rows={7} value={agentPrompt} onChange={e => setAgentPrompt(e.target.value)}
+            placeholder={"Ejemplos:\n- Saluda con '¡Qué tal, banda!' y trata al cliente de tú.\n- Siempre pregunta el modelo y año de la moto antes de recomendar.\n- Si compran 2 o más piezas, menciona que hay precio especial preguntando por WhatsApp.\n- Ofrece siempre un producto complementario (aceite, bujía, balatas).\n- Si preguntan por envíos, di que hay entregas locales el mismo día."}
+            style={{ width: "100%", resize: "vertical", fontFamily: "inherit", marginBottom: 10 }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <button onClick={saveAgentPrompt} disabled={agentBusy} style={btnGold}>
+              {agentBusy ? <Loader2 size={15} className="spin" /> : <Check size={15} />} Guardar indicaciones
+            </button>
+            {agentPrompt && <button onClick={() => setAgentPrompt("")} style={btnGhost}>Limpiar</button>}
+            {agentMsg && <span style={{ fontSize: 12, color: agentMsg.startsWith("Guardado") ? "#2ecc71" : "#e25c5c" }}>{agentMsg}</span>}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 10 }}>
+            Los cambios aplican de inmediato en las conversaciones nuevas de todos los catálogos. Si lo dejas vacío, el agente usa solo las reglas fijas.
+          </div>
         </Card>
       </div>
 

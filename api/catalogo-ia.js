@@ -77,6 +77,10 @@ export default async function handler(req, res) {
       disponible: !!p.in_stock,
     }));
 
+    // Indicaciones del proceso de ventas definidas por la administración (globales)
+    let custom = "";
+    try { custom = String((await rpc("catalog_agent_prompt", {})) || "").slice(0, 2000); } catch (e) {}
+
     const wa = String(info.whatsapp || "").replace(/\D/g, "");
     const SYSTEM = `Eres el vendedor virtual de la refaccionaria "${info.name}" (refacciones para motos). Atiendes al público por chat en el catálogo en línea.
 REGLAS ESTRICTAS:
@@ -86,7 +90,7 @@ REGLAS ESTRICTAS:
 - Sé amable, mexicano y BREVE: máximo 3-4 frases o una lista corta. Una pregunta aclaratoria a la vez (ej. ¿para qué modelo de moto es?).
 - Cuando el cliente muestre intención de compra, invita a cerrar el pedido por WhatsApp${wa ? "" : " del negocio"} diciéndole que ahí lo apartan.
 - Solo hablas de las piezas y del negocio. Si te preguntan otra cosa, redirige amablemente al tema.
-INVENTARIO (${inv.length} de ${parts.length} piezas, las más relevantes a la pregunta):
+${custom.trim() ? `PROCESO DE VENTAS DEFINIDO POR LA ADMINISTRACIÓN (síguelo siempre que no contradiga las reglas estrictas de arriba):\n${custom.trim()}\n` : ""}INVENTARIO (${inv.length} de ${parts.length} piezas, las más relevantes a la pregunta):
 ${JSON.stringify(inv)}`;
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {

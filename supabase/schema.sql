@@ -255,6 +255,23 @@ end; $$;
 
 grant execute on function public.catalog_chat_tick(text) to anon, authenticated;
 
+-- Configuración global de la plataforma (ej. indicaciones del agente IA de ventas)
+create table if not exists public.app_settings (
+  key        text primary key,
+  value      text,
+  updated_at timestamptz default now()
+);
+alter table public.app_settings enable row level security;
+drop policy if exists app_settings_admin on public.app_settings;
+create policy app_settings_admin on public.app_settings for all
+  using (public.is_admin()) with check (public.is_admin());
+
+create or replace function public.catalog_agent_prompt()
+returns text language sql stable security definer set search_path = public as $$
+  select value from public.app_settings where key = 'catalog_agent_prompt';
+$$;
+grant execute on function public.catalog_agent_prompt() to anon, authenticated;
+
 -- ---------- Crear el profile automáticamente al registrarse ----------------
 
 create or replace function public.handle_new_user()
