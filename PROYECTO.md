@@ -84,6 +84,13 @@ Se aplican en 3 capas: UI (candados y topes), base de datos (triggers `parts_lim
 
 ## ✅ Funciones ya hechas
 
+- **Catálogo público (Elite)**: enlace `aivoraia.com/c/SLUG` sin login; el público ve piezas,
+  precios (opcional) y disponibilidad, busca por modelo y pide por WhatsApp. Se configura en
+  "Negocio" (activar, WhatsApp, mostrar precios). Acceso anónimo SOLO vía funciones
+  `catalog_info`/`catalog_parts` (security definer, columnas seguras, solo Elite activo).
+  Migración: `supabase/migracion-catalogo.sql`. Nota: `vite.config.js` usa `base: "/"` y
+  `vercel.json` reescribe rutas al index para que `/c/...` funcione.
+
 - **Web pública (landing)**: los visitantes sin sesión ven una página de presentación del SaaS
   (funciones, cómo funciona, precios, preguntas frecuentes) con botones a login/registro.
   Está en el componente `LandingPage` dentro de `refaccionaria-motos.jsx`.

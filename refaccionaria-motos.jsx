@@ -284,8 +284,8 @@ const db = {
 };
 
 /* ---- Mapeo entre la forma de la app (camelCase) y las columnas de la BD ---- */
-const orgFromDb = (r) => ({ id: r.id, name: r.name, logo: r.logo_url || "", accent: r.accent || DEFAULT_ACCENT, defaultMin: Number(r.default_min_stock) || 0, status: r.status || "active", theme: r.theme || "dark", plan: PLANS[r.plan] ? r.plan : "basico", paidUntil: r.paid_until || "", createdAt: (r.created_at || "").slice(0, 10) });
-const orgToDb = (o) => { const r = { name: o.name, logo_url: o.logo || null, accent: o.accent || DEFAULT_ACCENT }; if (o.defaultMin != null) r.default_min_stock = Number(o.defaultMin) || 0; if (o.theme != null) r.theme = o.theme; if (o.plan != null) r.plan = PLANS[o.plan] ? o.plan : "basico"; if (o.paidUntil !== undefined) r.paid_until = o.paidUntil || null; return r; };
+const orgFromDb = (r) => ({ id: r.id, name: r.name, logo: r.logo_url || "", accent: r.accent || DEFAULT_ACCENT, defaultMin: Number(r.default_min_stock) || 0, status: r.status || "active", theme: r.theme || "dark", plan: PLANS[r.plan] ? r.plan : "basico", paidUntil: r.paid_until || "", catalogSlug: r.catalog_slug || "", catalogEnabled: !!r.catalog_enabled, catalogShowPrices: r.catalog_show_prices !== false, catalogWhatsapp: r.catalog_whatsapp || "", createdAt: (r.created_at || "").slice(0, 10) });
+const orgToDb = (o) => { const r = { name: o.name, logo_url: o.logo || null, accent: o.accent || DEFAULT_ACCENT }; if (o.defaultMin != null) r.default_min_stock = Number(o.defaultMin) || 0; if (o.theme != null) r.theme = o.theme; if (o.plan != null) r.plan = PLANS[o.plan] ? o.plan : "basico"; if (o.paidUntil !== undefined) r.paid_until = o.paidUntil || null; if (o.catalogSlug !== undefined) r.catalog_slug = o.catalogSlug || null; if (o.catalogEnabled !== undefined) r.catalog_enabled = !!o.catalogEnabled; if (o.catalogShowPrices !== undefined) r.catalog_show_prices = !!o.catalogShowPrices; if (o.catalogWhatsapp !== undefined) r.catalog_whatsapp = o.catalogWhatsapp || null; return r; };
 
 const partFromDb = (r) => ({ id: r.id, sku: r.sku || "", name: r.name, brand: r.brand || "", category: r.category || "Otro", compat: r.compat || "", color: r.color || "", stock: Number(r.stock) || 0, minStock: Number(r.min_stock) || 0, cost: Number(r.cost) || 0, price: Number(r.price) || 0, priceWholesale: Number(r.price_wholesale) || 0 });
 const partToDb = (p, org_id) => ({ id: p.id, org_id, sku: p.sku || null, name: p.name, brand: p.brand || null, category: p.category || null, compat: p.compat || null, color: p.color || null, stock: Number(p.stock) || 0, min_stock: Number(p.minStock) || 0, cost: Number(p.cost) || 0, price: Number(p.price) || 0, price_wholesale: Number(p.priceWholesale) || 0 });
@@ -379,6 +379,11 @@ function GlobalStyles() {
 }
 
 export default function RefaccionariaSaaS() {
+  // Ruta pública del catálogo: aivoraia.com/c/nombre-del-negocio (sin login)
+  const catalogSlug = useMemo(() => {
+    const m = window.location.pathname.match(/^\/c\/([a-z0-9-]+)\/?$/i);
+    return m ? m[1].toLowerCase() : null;
+  }, []);
   const [booting, setBooting] = useState(true);
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -423,6 +428,7 @@ export default function RefaccionariaSaaS() {
   const onAuthed = async () => { setSession(_session); await loadMe(); setScreen("home"); };
   const doSignOut = async () => { await signOut(); setSession(null); setProfile(null); setOrgs([]); setActiveOrgId(null); setScreen("home"); setRecovery(false); setAuthIntent(null); };
 
+  if (catalogSlug) return <><GlobalStyles /><PublicCatalog slug={catalogSlug} /></>;
   if (booting) return <><GlobalStyles /><Splash /></>;
   if (recovery) return <><GlobalStyles /><ResetPasswordScreen onDone={async () => { setRecovery(false); setSession(_session); await loadMe(); setScreen("home"); }} onCancel={doSignOut} /></>;
   if (!session) {
@@ -466,6 +472,179 @@ function Splash() {
 }
 
 /* ============================================================================
+   Catálogo público (plan Elite) — aivoraia.com/c/nombre-del-negocio
+   Página sin login: el público consulta piezas, precios y disponibilidad,
+   y pide por WhatsApp. Solo lee las funciones públicas catalog_info/parts.
+============================================================================ */
+async function rpcPublic(fn, args) {
+  const res = await fetch(`${SB_URL}/rest/v1/rpc/${fn}`, {
+    method: "POST",
+    headers: { apikey: SB_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  });
+  if (!res.ok) throw new Error("No se pudo cargar el catálogo");
+  return res.json();
+}
+// Arma el número para wa.me (México: 521 + 10 dígitos)
+const waNumber = (raw) => {
+  const d = String(raw || "").replace(/\D/g, "");
+  if (d.length === 10) return "521" + d;
+  if (d.length === 12 && d.startsWith("52")) return "521" + d.slice(2);
+  return d;
+};
+
+function PublicCatalog({ slug }) {
+  const [state, setState] = useState("loading"); // loading | notfound | ok
+  const [info, setInfo] = useState(null);
+  const [items, setItems] = useState([]);
+  const [q, setQ] = useState("");
+  const [brand, setBrand] = useState(null);
+  const [cat, setCat] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const rows = await rpcPublic("catalog_info", { slug_in: slug });
+        if (!rows || !rows.length) { setState("notfound"); return; }
+        setInfo(rows[0]);
+        const pp = await rpcPublic("catalog_parts", { slug_in: slug });
+        setItems((pp || []).map(r => ({ name: r.name, brand: r.brand || "", category: r.category || "", compat: r.compat || "", color: r.color || "", price: Number(r.price) || 0, inStock: !!r.in_stock })));
+        setState("ok");
+      } catch (e) { setState("notfound"); }
+    })();
+  }, [slug]);
+
+  useEffect(() => {
+    if (info) { document.title = `${info.name} · Catálogo`; setFavicon(info.logo_url || DEFAULT_FAVICON); }
+  }, [info]);
+
+  const brands = useMemo(() => {
+    const map = new Map();
+    for (const p of items) { const b = (p.brand || "").trim(); if (!b) continue; const k = b.toLowerCase(); map.set(k, { name: map.get(k)?.name || b, count: (map.get(k)?.count || 0) + 1 }); }
+    return [...map.values()].sort((a, b) => b.count - a.count).slice(0, 10);
+  }, [items]);
+  const cats = useMemo(() => [...new Set(items.map(p => p.category).filter(Boolean))].sort(), [items]);
+
+  const { list, modelHits } = useMemo(() => {
+    let base = items;
+    if (brand) base = base.filter(p => p.brand.trim().toLowerCase() === brand);
+    if (cat) base = base.filter(p => p.category === cat);
+    const s = q.trim().toLowerCase();
+    if (!s) return { list: base, modelHits: 0 };
+    const nq = normModel(s);
+    const byModel = base.filter(p => partMatchesModel(p, nq));
+    const universal = byModel.length ? base.filter(p => isUniversalCompat(p.compat)) : [];
+    const byText = base.filter(p => [p.name, p.brand, p.compat, p.color, p.category].filter(Boolean).some(v => v.toLowerCase().includes(s)));
+    const seen = new Set(); const merged = [];
+    for (const p of [...byModel, ...universal, ...byText]) { const k = `${p.name}|${p.color}|${p.brand}`; if (!seen.has(k)) { seen.add(k); merged.push(p); } }
+    return { list: merged, modelHits: byModel.length };
+  }, [items, q, brand, cat]);
+
+  if (state === "loading") return <ScreenShell><Loader2 size={28} className="spin" color="var(--accent)" /></ScreenShell>;
+  if (state === "notfound") return (
+    <ScreenShell>
+      <div style={{ textAlign: "center", maxWidth: 380 }}>
+        <img src="/aivoraia-symbol-light-512.png" alt="" style={{ width: 54, height: 54, objectFit: "contain", marginBottom: 12 }} />
+        <div className="sg" style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Catálogo no disponible</div>
+        <div style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.6 }}>Este catálogo no existe o el negocio lo tiene desactivado por el momento.</div>
+      </div>
+    </ScreenShell>
+  );
+
+  const light = info.theme === "light";
+  const wa = waNumber(info.whatsapp);
+  const waLink = (p) => `https://wa.me/${wa}?text=${encodeURIComponent(`Hola, vi en su catálogo "${p.name}${p.color ? ` (${p.color})` : ""}"${p.brand ? ` de ${p.brand}` : ""} y me interesa. ¿Está disponible?`)}`;
+
+  return (
+    <div style={{ "--accent": info.accent || DEFAULT_ACCENT, "--accent-soft": (info.accent || DEFAULT_ACCENT) + "22", ...(light ? THEME_LIGHT : {}), minHeight: "100vh", background: "var(--bg)", color: "var(--text)", fontFamily: "'Inter', system-ui, sans-serif" }}>
+      {/* Encabezado del negocio */}
+      <div style={{ background: "var(--card)", borderBottom: "1px solid var(--border)", padding: "18px 16px" }}>
+        <div style={{ maxWidth: 860, margin: "0 auto", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          {info.logo_url
+            ? <img src={info.logo_url} alt="" style={{ width: 48, height: 48, borderRadius: 12, objectFit: "cover" }} />
+            : <div style={{ width: 48, height: 48, borderRadius: 12, background: "var(--accent-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}><Store size={24} color="var(--accent)" /></div>}
+          <div style={{ flex: 1, minWidth: 160 }}>
+            <div className="sg" style={{ fontSize: 20, fontWeight: 700 }}>{info.name}</div>
+            <div style={{ fontSize: 12, color: "var(--muted)" }}>Catálogo en línea · precios y existencias</div>
+          </div>
+          {wa && (
+            <a href={`https://wa.me/${wa}`} target="_blank" rel="noreferrer" style={{ ...btnGold, textDecoration: "none", padding: "9px 14px", fontSize: 12 }}>
+              💬 WhatsApp
+            </a>
+          )}
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 860, margin: "0 auto", padding: "16px 16px 40px" }}>
+        {/* Buscador y filtros */}
+        <div style={{ position: "relative", marginBottom: 10 }}>
+          <Search size={16} color="var(--muted-2)" style={{ position: "absolute", left: 12, top: 13 }} />
+          <input placeholder="Busca una pieza o tu modelo de moto (ej. FT150)…" value={q} onChange={e => setQ(e.target.value)}
+            style={{ width: "100%", paddingLeft: 38, padding: "12px 12px 12px 38px", fontSize: 15 }} />
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+          {brands.length > 1 && [{ id: null, label: "Todas" }, ...brands.map(b => ({ id: b.name.toLowerCase(), label: b.name }))].map(f => (
+            <button key={f.id ?? "all"} onClick={() => setBrand(f.id)} style={{
+              padding: "5px 12px", borderRadius: 999, fontSize: 12, fontWeight: 700,
+              border: brand === f.id ? "1px solid var(--accent)" : "1px solid var(--border)",
+              background: brand === f.id ? "var(--accent-soft)" : "transparent",
+              color: brand === f.id ? "var(--accent)" : "var(--muted)",
+            }}>{f.label}</button>
+          ))}
+          {cats.length > 1 && (
+            <select value={cat} onChange={e => setCat(e.target.value)} style={{ fontSize: 12, padding: "6px 8px", marginLeft: "auto" }}>
+              <option value="">Todas las categorías</option>
+              {cats.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          )}
+        </div>
+        {modelHits > 0 && (
+          <div style={{ fontSize: 12, color: "var(--accent)", fontWeight: 700, marginBottom: 8 }}>
+            🏍 {modelHits} pieza{modelHits > 1 ? "s" : ""} compatible{modelHits > 1 ? "s" : ""} con "{q.trim()}" — y abajo las universales que también le quedan
+          </div>
+        )}
+
+        {/* Piezas */}
+        {list.length === 0 ? (
+          <EmptyState text={items.length === 0 ? "Este catálogo aún no tiene piezas publicadas." : "No encontramos piezas con tu búsqueda. Pregúntanos por WhatsApp: puede que la tengamos."} />
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
+            {list.map((p, i) => (
+              <div key={i} style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, padding: 14, display: "flex", flexDirection: "column", gap: 6, opacity: p.inStock ? 1 : 0.65 }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
+                  <div style={{ flex: 1, fontWeight: 600, fontSize: 14 }}>
+                    {p.name}
+                    {p.color && <span style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", border: "1px solid var(--border)", borderRadius: 6, padding: "1px 6px", marginLeft: 6 }}>{p.color}</span>}
+                  </div>
+                  <span style={{ fontSize: 10, fontWeight: 700, borderRadius: 6, padding: "2px 8px", flexShrink: 0, background: p.inStock ? "#2ecc7122" : "#e25c5c22", color: p.inStock ? "#2ecc71" : "#e25c5c" }}>
+                    {p.inStock ? "Disponible" : "Agotado"}
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--muted)" }}>{[p.brand, p.compat].filter(Boolean).join(" · ") || p.category}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: "auto" }}>
+                  {info.show_prices && p.price > 0 && <span className="sg" style={{ fontSize: 17, fontWeight: 700, color: "var(--accent)" }}>{fmt(p.price)}</span>}
+                  <div style={{ flex: 1 }} />
+                  {wa && p.inStock && (
+                    <a href={waLink(p)} target="_blank" rel="noreferrer" style={{ fontSize: 12, fontWeight: 700, color: "#2ecc71", textDecoration: "none", border: "1px solid #2ecc71", borderRadius: 8, padding: "5px 10px" }}>
+                      Pedir 💬
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Pie */}
+        <div style={{ textAlign: "center", marginTop: 34, fontSize: 12, color: "var(--muted-2)" }}>
+          Catálogo creado con <a href="/" style={{ color: "var(--accent)", fontWeight: 700, textDecoration: "none" }}>Aivoraia</a> · ¿Tienes una refaccionaria? Crea el tuyo.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
    Web pública (landing) — lo que ve un visitante antes de iniciar sesión.
    Presenta el producto y lleva al registro / inicio de sesión.
 ============================================================================ */
@@ -488,7 +667,7 @@ function LandingPage({ onEnter }) {
   const plans = [
     { name: "Básico", price: "$299", per: "MXN/mes", hl: false, items: ["Hasta 300 productos en inventario", "1 usuario", "Tablero con métricas del mes", "Inventario manual + importación CSV", "Punto de venta con ticket", "Alertas de stock bajo", "Soporte WhatsApp en horario hábil"] },
     { name: "Pro", price: "$599", per: "MXN/mes", hl: true, badge: "⭐ Más popular", items: ["Hasta 1,500 productos", "3 usuarios", "Todo lo del Plan Básico", "Módulo de gastos completo", "Contabilidad con histórico", "Asistente IA para inventario", "Importación de facturas XML, CSV y PDF", "Soporte prioritario WhatsApp"] },
-    { name: "Elite", price: "$999", per: "MXN/mes", hl: false, items: ["Productos ilimitados", "Usuarios ilimitados", "Todo lo del Plan Pro", "Onboarding en persona o videollamada", "Soporte dedicado mismo día", "Configuración inicial incluida"], soon: "Catálogo público con agente IA (próximamente)" },
+    { name: "Elite", price: "$999", per: "MXN/mes", hl: false, items: ["Productos ilimitados", "Usuarios ilimitados", "Todo lo del Plan Pro", "Catálogo público en línea con tu enlace", "Onboarding en persona o videollamada", "Soporte dedicado mismo día", "Configuración inicial incluida"], soon: "Agente IA de ventas en tu catálogo (próximamente)" },
   ];
   const faqs = [
     { q: "¿Necesito instalar algo?", a: "No. Funciona en el navegador de cualquier computadora, tablet o celular con internet. Tus datos se guardan en la nube y puedes entrar desde donde estés." },
@@ -1301,7 +1480,7 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
     const updated = { ...org, ...patch };
     // Solo se envían las columnas que el dueño realmente cambió
     // (plan, pago y estado los maneja únicamente el administrador).
-    const COL = { name: "name", logo: "logo_url", accent: "accent", defaultMin: "default_min_stock", theme: "theme" };
+    const COL = { name: "name", logo: "logo_url", accent: "accent", defaultMin: "default_min_stock", theme: "theme", catalogSlug: "catalog_slug", catalogEnabled: "catalog_enabled", catalogShowPrices: "catalog_show_prices", catalogWhatsapp: "catalog_whatsapp" };
     const full = orgToDb(updated);
     const payload = {};
     for (const k of Object.keys(patch)) { if (COL[k]) payload[COL[k]] = full[COL[k]]; }
@@ -2994,19 +3173,42 @@ function ReorderModal({ alerts, org, onClose }) {
 }
 
 /* ---------- Ajustes del negocio (editable por el dueño) ---------- */
+// Convierte el nombre del negocio en la dirección del catálogo (aivoraia.com/c/...)
+const slugify = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "negocio";
+
 function ShopSettings({ org, saveOrg, onClose, showToast, applyMinToZero }) {
-  const [form, setForm] = useState({ name: org.name, logo: org.logo || "", accent: org.accent || DEFAULT_ACCENT, defaultMin: org.defaultMin || 0, theme: org.theme || "dark" });
+  const [form, setForm] = useState({
+    name: org.name, logo: org.logo || "", accent: org.accent || DEFAULT_ACCENT, defaultMin: org.defaultMin || 0, theme: org.theme || "dark",
+    catalogEnabled: !!org.catalogEnabled, catalogWhatsapp: org.catalogWhatsapp || "", catalogShowPrices: org.catalogShowPrices !== false,
+  });
   const [applyZero, setApplyZero] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const accent = form.accent || DEFAULT_ACCENT;
+  const isElite = planOf(org).id === "elite";
+  const catalogUrl = org.catalogSlug ? `${window.location.origin}/c/${org.catalogSlug}` : null;
 
   const save = async () => {
     if (!form.name.trim()) return setErr("Ponle un nombre al negocio");
     setBusy(true); setErr(null);
     try {
       const defaultMin = Math.max(0, parseInt(form.defaultMin) || 0);
-      await saveOrg({ name: form.name.trim(), logo: form.logo, accent, defaultMin, theme: form.theme });
+      const patch = { name: form.name.trim(), logo: form.logo, accent, defaultMin, theme: form.theme };
+      if (isElite) {
+        patch.catalogEnabled = !!form.catalogEnabled;
+        patch.catalogWhatsapp = form.catalogWhatsapp.trim();
+        patch.catalogShowPrices = !!form.catalogShowPrices;
+        if (form.catalogEnabled && !org.catalogSlug) patch.catalogSlug = slugify(form.name);
+      }
+      try {
+        await saveOrg(patch);
+      } catch (e) {
+        // Si otra refaccionaria ya usa esa dirección, intenta con un sufijo
+        if (patch.catalogSlug && /duplicate|unique|409/i.test(e.message || "")) {
+          patch.catalogSlug = `${patch.catalogSlug}-${Math.random().toString(36).slice(2, 5)}`;
+          await saveOrg(patch);
+        } else throw e;
+      }
       if (applyZero && applyMinToZero) applyMinToZero(defaultMin);
       showToast("Negocio actualizado");
       onClose();
@@ -3073,6 +3275,47 @@ function ShopSettings({ org, saveOrg, onClose, showToast, applyMinToZero }) {
               ))}
             </div>
           </div>
+        </div>
+
+        {/* Catálogo público (Elite) */}
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border-soft)" }}>
+          <label style={lbl}>🌐 Catálogo público en línea</label>
+          {!isElite ? (
+            <div style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 8 }}>
+              <Lock size={14} color="var(--accent)" />
+              Tu propio enlace de catálogo para el público está disponible en el plan <b>Elite</b>. Contacta a Aivoraia para subir de plan.
+            </div>
+          ) : (
+            <>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-2)", cursor: "pointer", marginBottom: 10 }}>
+                <input type="checkbox" checked={form.catalogEnabled} onChange={e => setForm(f => ({ ...f, catalogEnabled: e.target.checked }))} style={{ width: 15, height: 15 }} />
+                Publicar mi catálogo (el público ve piezas y disponibilidad, sin costos ni datos internos)
+              </label>
+              {form.catalogEnabled && (
+                <>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                    <div style={{ flex: 1, minWidth: 180 }}>
+                      <label style={lbl}>WhatsApp para pedidos (10 dígitos con lada)</label>
+                      <input type="tel" placeholder="Ej. 5512345678" value={form.catalogWhatsapp} onChange={e => setForm(f => ({ ...f, catalogWhatsapp: e.target.value }))} style={{ width: "100%" }} />
+                    </div>
+                  </div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-2)", cursor: "pointer", marginBottom: 10 }}>
+                    <input type="checkbox" checked={form.catalogShowPrices} onChange={e => setForm(f => ({ ...f, catalogShowPrices: e.target.checked }))} style={{ width: 15, height: 15 }} />
+                    Mostrar precios al público (si lo apagas, solo se ve disponible/agotado)
+                  </label>
+                  {catalogUrl ? (
+                    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}>
+                      <span style={{ fontSize: 12, color: "var(--accent)", fontWeight: 700, wordBreak: "break-all", flex: 1, minWidth: 160 }}>{catalogUrl}</span>
+                      <button onClick={() => { try { navigator.clipboard.writeText(catalogUrl); showToast("Enlace copiado"); } catch (e) {} }} style={{ ...btnGhost, padding: "5px 10px", fontSize: 11 }}>Copiar</button>
+                      <a href={catalogUrl} target="_blank" rel="noreferrer" style={{ ...btnGhost, padding: "5px 10px", fontSize: 11, textDecoration: "none" }}>Abrir</a>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 11, color: "var(--muted)" }}>Tu enlace se creará al guardar (a partir del nombre del negocio).</div>
+                  )}
+                </>
+              )}
+            </>
+          )}
         </div>
 
         {err && <div style={{ color: "#e25c5c", fontSize: 12, marginTop: 10 }}>{err}</div>}
