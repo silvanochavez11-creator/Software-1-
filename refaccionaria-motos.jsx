@@ -69,6 +69,20 @@ const suggestQty = (p) => {
 };
 const escapeHtml = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+/* ---- Búsqueda por compatibilidad (modelos de moto) ----
+   Normaliza modelos para que "FT-150", "ft 150" y "FT150" sean lo mismo. */
+const normModel = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const compatTokens = (compat) => String(compat || "").split(/[,;/|]+/).map(t => t.trim()).filter(Boolean);
+const isUniversalCompat = (compat) => /univers|varios|todas|todos/i.test(compat || "");
+// ¿La pieza le queda al modelo buscado? (por token normalizado, en ambos sentidos)
+const partMatchesModel = (p, nq) => {
+  if (!nq || nq.length < 3) return false;
+  return compatTokens(p.compat).some(t => {
+    const nt = normModel(t);
+    return nt.length >= 3 && (nt.includes(nq) || nq.includes(nt));
+  });
+};
+
 // Almacenamiento local del navegador (sesión y config del ticket).
 // Misma interfaz async que usaba store, pero sobre localStorage real.
 const store = {
@@ -1760,8 +1774,10 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
     if (brandFilter === "__none__") base = parts.filter(p => !(p.brand || "").trim());
     else if (brandFilter) base = parts.filter(p => (p.brand || "").trim().toLowerCase() === brandFilter);
     if (!s) return base;
+    const nq = normModel(s);
     return base.filter(p =>
       [p.name, p.sku, p.brand, p.category, p.compat, p.color].filter(Boolean).some(v => v.toLowerCase().includes(s))
+      || partMatchesModel(p, nq)
     );
   }, [parts, q, brandFilter]);
 
@@ -2076,12 +2092,22 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
     ).slice(0, 50);
   }, [sales, histQ]);
 
-  const results = useMemo(() => {
+  // Resultados: primero lo que le queda al modelo buscado (aunque esté escrito
+  // distinto: "ft 150" encuentra "FT-150"), luego universales y coincidencias de texto.
+  const { results, modelHits } = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return [];
-    return parts.filter(p =>
+    if (!s) return { results: [], modelHits: 0 };
+    const nq = normModel(s);
+    const byModel = parts.filter(p => partMatchesModel(p, nq));
+    const universal = byModel.length ? parts.filter(p => isUniversalCompat(p.compat)) : [];
+    const byText = parts.filter(p =>
       [p.name, p.sku, p.brand, p.compat, p.color].filter(Boolean).some(v => v.toLowerCase().includes(s))
-    ).slice(0, 8);
+    );
+    const seen = new Set(); const merged = [];
+    for (const p of [...byModel, ...universal, ...byText]) {
+      if (!seen.has(p.id)) { seen.add(p.id); merged.push(p); }
+    }
+    return { results: merged.slice(0, byModel.length ? 15 : 8), modelHits: byModel.length };
   }, [parts, q]);
 
   const addToCart = (p) => {
@@ -2147,6 +2173,11 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
       <Card>
         <SectionTitle icon={Search}>Buscar refacción</SectionTitle>
         <input autoFocus placeholder="Escribe nombre, SKU o modelo de moto…" value={q} onChange={e => setQ(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
+        {modelHits > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--accent)", fontWeight: 700, padding: "2px 4px 8px" }}>
+            🏍 {modelHits} pieza{modelHits > 1 ? "s" : ""} compatible{modelHits > 1 ? "s" : ""} con "{q.trim()}" — primero las del modelo, luego universales
+          </div>
+        )}
         {results.map(p => (
           <div key={p.id} onClick={() => addToCart(p)}
             style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 8px", borderRadius: 8, cursor: "pointer", borderBottom: "1px solid var(--border-soft)" }}
