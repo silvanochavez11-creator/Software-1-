@@ -2380,7 +2380,7 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
 
   // Llama a la IA (con o sin fotos) y devuelve las operaciones ya validadas.
   // Lanza Error con mensaje legible si algo falla.
-  const askOps = async (instruction, images) => {
+  const askOps = async (instruction, images, model) => {
     // Snapshot del inventario con un 'ref' para que la IA pueda apuntar a piezas existentes
     const refList = parts.map((p, i) => ({
       ref: i, name: p.name, brand: p.brand || "", compat: p.compat || "", color: p.color || "",
@@ -2390,7 +2390,7 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
     const response = await fetch("/api/ai", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${_session?.access_token || ""}` },
-      body: JSON.stringify({ org_id: org?.id, system: SYSTEM, user: `INVENTARIO ACTUAL:\n${JSON.stringify(refList)}\n\nINSTRUCCIÓN:\n${instruction}`, ...(images && images.length ? { images } : {}) }),
+      body: JSON.stringify({ org_id: org?.id, system: SYSTEM, user: `INVENTARIO ACTUAL:\n${JSON.stringify(refList)}\n\nINSTRUCCIÓN:\n${instruction}`, ...(images && images.length ? { images } : {}), ...(model ? { model } : {}) }),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "No se pudo procesar. Revisa que la IA esté configurada en Vercel.");
@@ -2465,16 +2465,18 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
     setPhotoMsg(`Preparando ${files.length} foto${files.length > 1 ? "s" : ""}…`);
     try {
       const imgs = [];
-      for (const f of files) imgs.push(await fileToJpeg(f));
-      const BATCH = 3;
+      // Más resolución = mejor lectura de letra manuscrita
+      for (const f of files) imgs.push(await fileToJpeg(f, 2000, 0.85));
+      const BATCH = 2; // pocas fotos por llamada para que la IA lea con calma cada página
       const all = [];
       let lastError = null;
-      const instruction = "Da de alta en el inventario TODAS las refacciones que se lean en estas FOTOGRAFÍAS (páginas de una libreta de inventario escritas a mano o impresas, o estantes con etiquetas). Por cada renglón o pieza legible crea una operación 'create': 'name' con la descripción tal como está escrita (corrigiendo solo ortografía obvia), 'stock' con la cantidad si aparece, 'cost' con el costo si aparece y 'price' con el precio de venta si aparece. Si solo hay UN precio, asume que es el de venta ('price') y deja 'cost' en 0. Incluye 'brand', 'compat' y 'color' cuando se distingan. Si una pieza ya existe en el INVENTARIO ACTUAL, usa 'restock' en lugar de 'create'. NO inventes piezas: si un renglón no se lee con claridad, omítelo.";
+      const instruction = "Estas FOTOGRAFÍAS son páginas de una libreta de inventario de una refaccionaria (escritas a mano o impresas) o estantes con etiquetas. Lee la página COMPLETA, renglón por renglón, de arriba hacia abajo, incluyendo los renglones de los bordes. Por cada renglón o pieza legible crea una operación 'create': 'name' con la descripción tal como está escrita (corrigiendo solo ortografía obvia y abreviaturas comunes de refacciones), 'stock' con la cantidad si aparece, 'cost' con el costo si aparece y 'price' con el precio de venta si aparece. Ojo con la notación mexicana: '1,250' es mil doscientos cincuenta y '$85' son 85 pesos; las columnas suelen ser cantidad | descripción | precio. Si solo hay UN precio, asume que es el de venta ('price') y deja 'cost' en 0. Incluye 'brand', 'compat' (modelo de moto) y 'color' cuando se distingan. Si una pieza ya existe en el INVENTARIO ACTUAL, usa 'restock' en lugar de 'create'. NO inventes piezas ni números: si un renglón no se lee con claridad, omítelo por completo.";
       for (let i = 0; i < imgs.length; i += BATCH) {
         const upto = Math.min(imgs.length, i + BATCH);
         setPhotoMsg(imgs.length > BATCH ? `Leyendo con IA las fotos ${i + 1}–${upto} de ${imgs.length}…` : "Leyendo las fotos con IA…");
         try {
-          const built = await askOps(instruction, imgs.slice(i, upto));
+          // gpt-4o (el modelo grande) lee manuscritos mucho mejor que el económico
+          const built = await askOps(instruction, imgs.slice(i, upto), "gpt-4o");
           all.push(...built);
         } catch (e) { lastError = e; }
       }

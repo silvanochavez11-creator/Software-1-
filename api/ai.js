@@ -66,12 +66,16 @@ export default async function handler(req, res) {
     return;
   }
 
+  // Modelos permitidos (el cliente pide 'gpt-4o' para fotos, que lee mucho mejor manuscritos)
+  const ALLOWED_MODELS = ["gpt-4o-mini", "gpt-4o"];
+  const chosenModel = ALLOWED_MODELS.includes(model) ? model : (imgs.length ? "gpt-4o" : "gpt-4o-mini");
+
   try {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({
-        model: model || "gpt-4o-mini",
+        model: chosenModel,
         temperature: 0,
         response_format: { type: "json_object" },
         messages: [
@@ -90,7 +94,13 @@ export default async function handler(req, res) {
       res.status(r.status).json({ error: (data.error && data.error.message) || "Error de OpenAI" });
       return;
     }
-    const text = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
+    const choice = data.choices && data.choices[0];
+    // Si el modelo se quedó sin espacio, el JSON llega cortado: mejor avisar claro
+    if (choice && choice.finish_reason === "length") {
+      res.status(422).json({ error: "La página tiene demasiados renglones para una sola tanda. Manda menos fotos a la vez o divide la página en dos fotos." });
+      return;
+    }
+    const text = (choice && choice.message && choice.message.content) || "";
     res.status(200).json({ text });
   } catch (e) {
     res.status(500).json({ error: "Error llamando a la IA" });
