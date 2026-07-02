@@ -7,7 +7,7 @@ import Papa from "papaparse";
 import {
   Plus, Upload, TrendingUp, Wallet, Package, Trash2, Sparkles, Check, X, Loader2,
   AlertTriangle, ShoppingCart, Search, Pencil, Boxes, DollarSign, Receipt, BarChart3, Printer,
-  LogOut, Store, ImagePlus, Shield, ArrowRight, LogIn, UserPlus, Users, Mail, Lock, Bell, ClipboardList
+  LogOut, Store, ImagePlus, Shield, ArrowRight, LogIn, UserPlus, Users, Mail, Lock, Bell, ClipboardList, Camera
 } from "lucide-react";
 
 const fmt = (n) =>
@@ -16,6 +16,8 @@ const fmt0 = (n) =>
   new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN", maximumFractionDigits: 0 }).format(n || 0);
 
 const PART_CATS = ["Motor", "Frenos", "Suspensión", "Eléctrico", "Transmisión", "Llantas y cámaras", "Aceites y lubricantes", "Carrocería", "Accesorios", "Otro"];
+// Colores comunes de piezas (sugerencias; el campo acepta cualquier texto)
+const PART_COLORS = ["Negro", "Blanco", "Rojo", "Azul", "Verde", "Amarillo", "Naranja", "Gris", "Plata", "Dorado", "Cromado", "Café", "Morado", "Rosa", "Transparente", "Multicolor"];
 const EXPENSE_CATS = ["Compra a proveedor", "Renta", "Servicios (luz/agua/internet)", "Sueldos", "Publicidad", "Mantenimiento", "Impuestos", "Otro"];
 
 const uid = () => crypto.randomUUID();
@@ -128,6 +130,30 @@ function fileToLogo(file, cb) {
     img.src = e.target.result;
   };
   reader.readAsDataURL(file);
+}
+
+// Comprime una foto a JPEG (máx maxDim px) para mandarla a la IA sin que pese tanto
+function fileToJpeg(file, maxDim = 1600, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); // fondo blanco por si trae transparencia
+        ctx.drawImage(img, 0, 0, w, h);
+        try { resolve(canvas.toDataURL("image/jpeg", quality)); } catch (err) { reject(err); }
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 }
 
 /* ============================================================================
@@ -247,10 +273,11 @@ const db = {
 const orgFromDb = (r) => ({ id: r.id, name: r.name, logo: r.logo_url || "", accent: r.accent || DEFAULT_ACCENT, defaultMin: Number(r.default_min_stock) || 0, status: r.status || "active", theme: r.theme || "dark", plan: PLANS[r.plan] ? r.plan : "basico", paidUntil: r.paid_until || "", createdAt: (r.created_at || "").slice(0, 10) });
 const orgToDb = (o) => { const r = { name: o.name, logo_url: o.logo || null, accent: o.accent || DEFAULT_ACCENT }; if (o.defaultMin != null) r.default_min_stock = Number(o.defaultMin) || 0; if (o.theme != null) r.theme = o.theme; if (o.plan != null) r.plan = PLANS[o.plan] ? o.plan : "basico"; if (o.paidUntil !== undefined) r.paid_until = o.paidUntil || null; return r; };
 
-const partFromDb = (r) => ({ id: r.id, sku: r.sku || "", name: r.name, brand: r.brand || "", category: r.category || "Otro", compat: r.compat || "", stock: Number(r.stock) || 0, minStock: Number(r.min_stock) || 0, cost: Number(r.cost) || 0, price: Number(r.price) || 0 });
-const partToDb = (p, org_id) => ({ id: p.id, org_id, sku: p.sku || null, name: p.name, brand: p.brand || null, category: p.category || null, compat: p.compat || null, stock: Number(p.stock) || 0, min_stock: Number(p.minStock) || 0, cost: Number(p.cost) || 0, price: Number(p.price) || 0 });
+const partFromDb = (r) => ({ id: r.id, sku: r.sku || "", name: r.name, brand: r.brand || "", category: r.category || "Otro", compat: r.compat || "", color: r.color || "", stock: Number(r.stock) || 0, minStock: Number(r.min_stock) || 0, cost: Number(r.cost) || 0, price: Number(r.price) || 0 });
+const partToDb = (p, org_id) => ({ id: p.id, org_id, sku: p.sku || null, name: p.name, brand: p.brand || null, category: p.category || null, compat: p.compat || null, color: p.color || null, stock: Number(p.stock) || 0, min_stock: Number(p.minStock) || 0, cost: Number(p.cost) || 0, price: Number(p.price) || 0 });
 
-const saleFromDb = (r) => ({ id: r.id, folio: r.folio, customer: r.customer || "", items: r.items || [], total: Number(r.total) || 0, cogs: Number(r.cogs) || 0, profit: Number(r.profit) || 0, date: r.sold_at, time: "" });
+// La hora exacta de la venta se recupera de created_at (el instante en que se guardó)
+const saleFromDb = (r) => ({ id: r.id, folio: r.folio, customer: r.customer || "", items: r.items || [], total: Number(r.total) || 0, cogs: Number(r.cogs) || 0, profit: Number(r.profit) || 0, date: r.sold_at, time: r.created_at ? new Date(r.created_at).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) : "" });
 const saleToDb = (s, org_id) => ({ id: s.id, org_id, folio: s.folio || null, customer: s.customer || null, items: s.items || [], total: Number(s.total) || 0, cogs: Number(s.cogs) || 0, profit: Number(s.profit) || 0, sold_at: s.date });
 
 const expenseFromDb = (r) => ({ id: r.id, category: r.category, amount: Number(r.amount) || 0, note: r.note || "", date: r.spent_at });
@@ -421,7 +448,7 @@ function LandingPage({ onEnter }) {
     { icon: ShoppingCart, title: "Punto de venta", desc: "Cobra en segundos: descuenta el stock solo, calcula la utilidad de cada venta e imprime tickets con tu logo y folio." },
     { icon: Boxes, title: "Inventario completo", desc: "Altas, bajas, búsqueda por SKU, marca o compatibilidad. Importa y exporta tu inventario en CSV cuando quieras." },
     { icon: BarChart3, title: "Contabilidad clara", desc: "Estado de resultados por día, semana, mes o histórico, con gráficas de ventas, gastos y utilidad." },
-    { icon: Sparkles, title: "Asistente con IA", desc: "Dile qué llegó y lo captura por ti. Importa facturas CSV, XML/CFDI o PDF y las convierte en inventario." },
+    { icon: Sparkles, title: "Asistente con IA", desc: "Dile qué llegó y lo captura por ti. Importa facturas CSV, XML/CFDI o PDF — y hasta fotos de tu libreta de inventario." },
     { icon: Bell, title: "Avisos de stock", desc: "Niveles por pieza (agotado, crítico, por agotarse), campana con pendientes y lista de reorden sugerida." },
     { icon: Store, title: "Varias sucursales", desc: "Cada refaccionaria con su logo, color y tema. Cada dueño ve solo su negocio; tú lo ves todo." },
     { icon: Shield, title: "Datos seguros en la nube", desc: "Tu información viaja cifrada y queda aislada por negocio. Entra desde cualquier computadora o celular." },
@@ -1682,7 +1709,7 @@ function TopVendidos({ sales }) {
 }
 
 /* ---------- Inventario ---------- */
-const emptyPart = () => ({ sku: "", name: "", brand: "", category: PART_CATS[0], compat: "", stock: "", minStock: "", cost: "", price: "" });
+const emptyPart = () => ({ sku: "", name: "", brand: "", category: PART_CATS[0], compat: "", color: "", stock: "", minStock: "", cost: "", price: "" });
 
 function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = null, planLabel = "" }) {
   const roomLeft = maxParts != null ? Math.max(0, maxParts - parts.length) : Infinity;
@@ -1703,7 +1730,7 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
     const s = q.trim().toLowerCase();
     if (!s) return parts;
     return parts.filter(p =>
-      [p.name, p.sku, p.brand, p.category, p.compat].filter(Boolean).some(v => v.toLowerCase().includes(s))
+      [p.name, p.sku, p.brand, p.category, p.compat, p.color].filter(Boolean).some(v => v.toLowerCase().includes(s))
     );
   }, [parts, q]);
 
@@ -1731,7 +1758,7 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
 
   const startEdit = (p) => {
     setEditId(p.id);
-    setForm({ sku: p.sku || "", name: p.name, brand: p.brand || "", category: p.category, compat: p.compat || "", stock: p.stock, minStock: p.minStock, cost: p.cost, price: p.price });
+    setForm({ sku: p.sku || "", name: p.name, brand: p.brand || "", category: p.category, compat: p.compat || "", color: p.color || "", stock: p.stock, minStock: p.minStock, cost: p.cost, price: p.price });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -1741,7 +1768,7 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
 
   const exportCSV = () => {
     const csv = Papa.unparse(parts.map(p => ({
-      sku: p.sku, nombre: p.name, marca: p.brand, categoria: p.category, compatibilidad: p.compat,
+      sku: p.sku, nombre: p.name, marca: p.brand, categoria: p.category, compatibilidad: p.compat, color: p.color,
       stock: p.stock, minimo: p.minStock, costo: p.cost, precio: p.price
     })));
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -1767,6 +1794,7 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
       brand: ["marca", "brand", "fabricante"],
       category: ["categoria", "category", "tipo", "linea"],
       compat: ["compatibilidad", "compat", "modelo", "aplicacion", "moto", "compatible"],
+      color: ["color", "colores", "tono"],
       stock: ["stock", "cantidad", "existencia", "existencias", "qty", "piezas", "cant", "cantidaddisponible", "enexistencia"],
       minStock: ["minimo", "min", "stockminimo", "minstock", "minimostock"],
       cost: ["costo", "cost", "compra", "costounitario", "preciocompra", "preciodecompra", "costodecompra"],
@@ -1793,6 +1821,7 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
             brand: pick(r, "brand").toString(),
             category: cat,
             compat: pick(r, "compat").toString(),
+            color: pick(r, "color").toString(),
             stock: Math.max(0, Math.round(parseNum(pick(r, "stock")))),
             minStock: minRaw !== "" ? Math.max(0, Math.round(parseNum(minRaw))) : defaultMin,
             cost: Math.max(0, parseNum(pick(r, "cost"))),
@@ -1826,6 +1855,8 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
             {PART_CATS.map(c => <option key={c}>{c}</option>)}
           </select>
           <input placeholder="Compatibilidad (ej. FT150, DM200)" value={form.compat} onChange={e => setForm(f => ({ ...f, compat: e.target.value }))} />
+          <input placeholder="Color (ej. Rojo)" list="part-colors" value={form.color} onChange={e => setForm(f => ({ ...f, color: e.target.value }))} />
+          <datalist id="part-colors">{PART_COLORS.map(c => <option key={c} value={c} />)}</datalist>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, marginBottom: 10 }}>
           <div><label style={lbl}>Stock</label><input type="number" placeholder="0" value={form.stock} onChange={e => setForm(f => ({ ...f, stock: e.target.value }))} style={{ width: "100%" }} /></div>
@@ -1922,7 +1953,10 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
                   return (
                     <tr key={p.id}>
                       <td>
-                        <div style={{ fontWeight: 600 }}>{p.name}</div>
+                        <div style={{ fontWeight: 600 }}>
+                          {p.name}
+                          {p.color && <span style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", border: "1px solid var(--border)", borderRadius: 6, padding: "1px 6px", marginLeft: 6, verticalAlign: "middle" }}>{p.color}</span>}
+                        </div>
                         <div style={{ fontSize: 11, color: "var(--muted-2)" }}>{[p.brand, p.sku].filter(Boolean).join(" · ") || "—"}</div>
                       </td>
                       <td style={{ color: "var(--muted)" }}>{p.category}</td>
@@ -1958,12 +1992,25 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
   const [cart, setCart] = useState([]); // {partId, name, sku, qty, price, cost, maxStock}
   const [q, setQ] = useState("");
   const [customer, setCustomer] = useState("");
+  const [histQ, setHistQ] = useState(""); // buscador del historial de ventas
+
+  // Historial: sin búsqueda muestra las recientes; buscando filtra TODAS las ventas
+  const histResults = useMemo(() => {
+    const s = histQ.trim().toLowerCase();
+    if (!s) return sales.slice(0, 12);
+    return sales.filter(v =>
+      String(v.folio) === s.replace("#", "") ||
+      (v.customer || "").toLowerCase().includes(s) ||
+      (v.date || "").includes(s) ||
+      (v.items || []).some(i => (i.name || "").toLowerCase().includes(s))
+    ).slice(0, 50);
+  }, [sales, histQ]);
 
   const results = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return [];
     return parts.filter(p =>
-      [p.name, p.sku, p.brand, p.compat].filter(Boolean).some(v => v.toLowerCase().includes(s))
+      [p.name, p.sku, p.brand, p.compat, p.color].filter(Boolean).some(v => v.toLowerCase().includes(s))
     ).slice(0, 8);
   }, [parts, q]);
 
@@ -1975,7 +2022,7 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
         if (ex.qty >= p.stock) { showToast("No hay más stock"); return prev; }
         return prev.map(i => i.partId === p.id ? { ...i, qty: i.qty + 1 } : i);
       }
-      return [...prev, { partId: p.id, name: p.name, sku: p.sku, qty: 1, price: Number(p.price) || 0, cost: Number(p.cost) || 0, maxStock: Number(p.stock) || 0 }];
+      return [...prev, { partId: p.id, name: p.name, color: p.color || "", sku: p.sku, qty: 1, price: Number(p.price) || 0, cost: Number(p.cost) || 0, maxStock: Number(p.stock) || 0 }];
     });
     setQ("");
   };
@@ -2002,7 +2049,7 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
       date: todayStr(),
       time: new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }),
       customer: customer.trim(),
-      items: cart.map(({ partId, name, sku, qty, price, cost }) => ({ partId, name, sku, qty, price, cost })),
+      items: cart.map(({ partId, name, color, sku, qty, price, cost }) => ({ partId, name, color, sku, qty, price, cost })),
       total, cogs, profit,
     };
     setSales(prev => [sale, ...prev]);
@@ -2036,7 +2083,7 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
             onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 600 }}>{p.name}</div>
-              <div style={{ fontSize: 11, color: "var(--muted-2)" }}>{[p.brand, p.compat].filter(Boolean).join(" · ") || p.sku || "—"} · {p.stock} en stock</div>
+              <div style={{ fontSize: 11, color: "var(--muted-2)" }}>{[p.brand, p.color, p.compat].filter(Boolean).join(" · ") || p.sku || "—"} · {p.stock} en stock</div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontWeight: 600, fontSize: 13 }}>{fmt(p.price)}</span>
@@ -2047,15 +2094,26 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
         {q && results.length === 0 && <div style={{ fontSize: 12, color: "var(--muted-2)", padding: "8px 4px" }}>Sin coincidencias.</div>}
 
         <SectionTitle icon={ShoppingCart} >{""}</SectionTitle>
-        <div className="sg" style={{ fontSize: 13, fontWeight: 700, margin: "8px 0", color: "var(--muted)" }}>Ventas recientes</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "8px 0", flexWrap: "wrap" }}>
+          <div className="sg" style={{ fontSize: 13, fontWeight: 700, color: "var(--muted)" }}>
+            {histQ.trim() ? `Historial de ventas (${histResults.length})` : "Ventas recientes"}
+          </div>
+          <div style={{ flex: 1 }} />
+          <div style={{ position: "relative" }}>
+            <Search size={13} color="var(--muted-2)" style={{ position: "absolute", left: 9, top: 9 }} />
+            <input placeholder="Folio, cliente, fecha o pieza…" value={histQ} onChange={e => setHistQ(e.target.value)}
+              style={{ paddingLeft: 27, width: 200, fontSize: 12, padding: "6px 8px 6px 27px" }} title="Busca cualquier venta para reimprimir su ticket" />
+          </div>
+        </div>
         {sales.length === 0 && <EmptyState text="Aún no hay ventas." />}
-        <div style={{ maxHeight: 220, overflowY: "auto" }}>
-          {sales.slice(0, 12).map(s => (
+        {sales.length > 0 && histResults.length === 0 && <EmptyState text="Sin ventas que coincidan con tu búsqueda." />}
+        <div style={{ maxHeight: histQ.trim() ? 340 : 220, overflowY: "auto" }}>
+          {histResults.map(s => (
             <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--border-soft)", fontSize: 12 }}>
-              <span style={{ color: "var(--muted)" }}>{s.folio ? `#${s.folio} · ` : ""}{s.date} · {s.items.reduce((a, i) => a + i.qty, 0)} pza{s.customer ? ` · ${s.customer}` : ""}</span>
+              <span style={{ color: "var(--muted)" }}>{s.folio ? `#${s.folio} · ` : ""}{s.date}{s.time ? ` ${s.time}` : ""} · {s.items.reduce((a, i) => a + i.qty, 0)} pza{s.customer ? ` · ${s.customer}` : ""}</span>
               <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={{ fontWeight: 600 }}>{fmt(s.total)} <span style={{ color: "#2ecc71", fontWeight: 500 }}>(+{fmt0(s.profit)})</span></span>
-                <button onClick={() => onTicket && onTicket(s)} style={iconBtn} title="Imprimir ticket"><Printer size={14} /></button>
+                <button onClick={() => onTicket && onTicket(s)} style={iconBtn} title="Reimprimir ticket"><Printer size={14} /></button>
               </span>
             </div>
           ))}
@@ -2071,7 +2129,7 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
             {cart.map(i => (
               <div key={i.partId} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid var(--border-soft)" }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{i.name}</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{i.name}{i.color ? ` (${i.color})` : ""}</div>
                   <div style={{ fontSize: 11, color: "var(--muted-2)" }}>máx {i.maxStock}</div>
                 </div>
                 <input type="number" value={i.qty} onChange={e => setQty(i.partId, e.target.value)} style={{ width: 56 }} title="Cantidad" />
@@ -2274,7 +2332,7 @@ function Contabilidad({ sales, expenses, allowHistory = true }) {
 
 /* ---------- Asistente IA (alta masiva de inventario desde texto) ---------- */
 const NUMERIC_FIELDS = ["stock", "minStock", "cost", "price"];
-const FIELD_LABEL = { name: "nombre", brand: "marca", category: "categoría", compat: "compatibilidad", stock: "stock", minStock: "mínimo", cost: "costo", price: "precio" };
+const FIELD_LABEL = { name: "nombre", brand: "marca", category: "categoría", compat: "compatibilidad", color: "color", stock: "stock", minStock: "mínimo", cost: "costo", price: "precio" };
 const MONEY_FIELDS = new Set(["cost", "price"]);
 const sanitizeField = (field, val) =>
   NUMERIC_FIELDS.includes(field) ? Math.max(0, (field === "stock" || field === "minStock" ? parseInt(val) : parseFloat(val)) || 0) : String(val ?? "");
@@ -2286,6 +2344,7 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState(null);
   const [fileBusy, setFileBusy] = useState(false);
+  const [photoMsg, setPhotoMsg] = useState(null); // progreso de la lectura de fotos
 
   const importFile = async (file) => {
     if (!file) return;
@@ -2307,32 +2366,29 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
     }
   };
 
-  const ask = async (override) => {
-    const instruction = typeof override === "string" ? override : text;
-    if (!instruction.trim()) return;
-    setLoading(true); setError(null); setPreview(null);
+  // Llama a la IA (con o sin fotos) y devuelve las operaciones ya validadas.
+  // Lanza Error con mensaje legible si algo falla.
+  const askOps = async (instruction, images) => {
     // Snapshot del inventario con un 'ref' para que la IA pueda apuntar a piezas existentes
     const refList = parts.map((p, i) => ({
-      ref: i, name: p.name, brand: p.brand || "", compat: p.compat || "",
+      ref: i, name: p.name, brand: p.brand || "", compat: p.compat || "", color: p.color || "",
       category: p.category, stock: Number(p.stock) || 0, cost: Number(p.cost) || 0, price: Number(p.price) || 0,
     }));
-    try {
-      const SYSTEM = "Eres asistente del inventario de una refaccionaria de motos. Recibes (1) el INVENTARIO ACTUAL como arreglo JSON (cada pieza tiene 'ref' numérico, name, brand, compat, category, stock, cost, price) y (2) una INSTRUCCIÓN del usuario en español. Devuelve SOLO un objeto JSON con la forma {\"operations\": [ ... ]}, sin texto adicional, sin markdown. Cada elemento de 'operations' es una operación:\n- Crear pieza nueva: {\"op\":\"create\",\"name\":string,\"brand\":string,\"category\":string,\"compat\":string,\"stock\":number,\"cost\":number,\"price\":number}\n- Modificar una pieza existente: {\"op\":\"update\",\"ref\":number,\"set\":{campo:valor,...}} donde campo ∈ name,brand,category,compat,stock,minStock,cost,price. Incluye en 'set' SOLO los campos que cambian, con su valor FINAL ya calculado.\n- Reabastecer (sumar al stock): {\"op\":\"restock\",\"ref\":number,\"add\":number,\"cost\":number(opcional),\"price\":number(opcional)}\n- Eliminar pieza: {\"op\":\"delete\",\"ref\":number}\nReglas: 'category' debe ser una de: Motor, Frenos, Suspensión, Eléctrico, Transmisión, Llantas y cámaras, Aceites y lubricantes, Carrocería, Accesorios, Otro. Si el usuario pide algo relativo (ej. 'sube 10% el precio', 'baja 20 pesos', 'duplica el stock') CALCULA tú el número final usando el valor actual del inventario. Una instrucción puede afectar a varias piezas (ej. 'sube 10% todos los aceites' => varias operaciones update). Si llega mercancía de una pieza que YA existe, usa 'restock'; si es pieza nueva, 'create'; si solo cambian datos de una pieza existente, 'update'. Para identificar la pieza usa name/brand/compat del inventario. Si no estás seguro de a qué pieza se refiere, omítela en lugar de adivinar.";
-      const response = await fetch("/api/ai", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${_session?.access_token || ""}` },
-        body: JSON.stringify({ org_id: org?.id, system: SYSTEM, user: `INVENTARIO ACTUAL:\n${JSON.stringify(refList)}\n\nINSTRUCCIÓN:\n${instruction}` }),
-      });
-      const data = await response.json();
-      if (!response.ok) { setError(data.error || "No se pudo procesar. Revisa que la IA esté configurada en Vercel."); return; }
-      const clean = (data.text || "").replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
-      const ops = Array.isArray(parsed) ? parsed : (parsed.operations || parsed.ops || parsed.items || []);
-      if (!Array.isArray(ops) || ops.length === 0) {
-        setError("No entendí ninguna acción clara. Sé más específico (qué pieza y qué cambio).");
-        return;
-      }
-      const built = ops.map(o => {
+    const SYSTEM = "Eres asistente del inventario de una refaccionaria de motos. Recibes (1) el INVENTARIO ACTUAL como arreglo JSON (cada pieza tiene 'ref' numérico, name, brand, compat, color, category, stock, cost, price) y (2) una INSTRUCCIÓN del usuario en español. Devuelve SOLO un objeto JSON con la forma {\"operations\": [ ... ]}, sin texto adicional, sin markdown. Cada elemento de 'operations' es una operación:\n- Crear pieza nueva: {\"op\":\"create\",\"name\":string,\"brand\":string,\"category\":string,\"compat\":string,\"color\":string,\"stock\":number,\"cost\":number,\"price\":number}\n- Modificar una pieza existente: {\"op\":\"update\",\"ref\":number,\"set\":{campo:valor,...}} donde campo ∈ name,brand,category,compat,color,stock,minStock,cost,price. Incluye en 'set' SOLO los campos que cambian, con su valor FINAL ya calculado.\n- Reabastecer (sumar al stock): {\"op\":\"restock\",\"ref\":number,\"add\":number,\"cost\":number(opcional),\"price\":number(opcional)}\n- Eliminar pieza: {\"op\":\"delete\",\"ref\":number}\nReglas: 'category' debe ser una de: Motor, Frenos, Suspensión, Eléctrico, Transmisión, Llantas y cámaras, Aceites y lubricantes, Carrocería, Accesorios, Otro. Si el usuario pide algo relativo (ej. 'sube 10% el precio', 'baja 20 pesos', 'duplica el stock') CALCULA tú el número final usando el valor actual del inventario. Una instrucción puede afectar a varias piezas (ej. 'sube 10% todos los aceites' => varias operaciones update). Si llega mercancía de una pieza que YA existe, usa 'restock'; si es pieza nueva, 'create'; si solo cambian datos de una pieza existente, 'update'. Para identificar la pieza usa name/brand/compat del inventario. Si no estás seguro de a qué pieza se refiere, omítela en lugar de adivinar.";
+    const response = await fetch("/api/ai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${_session?.access_token || ""}` },
+      body: JSON.stringify({ org_id: org?.id, system: SYSTEM, user: `INVENTARIO ACTUAL:\n${JSON.stringify(refList)}\n\nINSTRUCCIÓN:\n${instruction}`, ...(images && images.length ? { images } : {}) }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "No se pudo procesar. Revisa que la IA esté configurada en Vercel.");
+    const clean = (data.text || "").replace(/```json|```/g, "").trim();
+    let parsed;
+    try { parsed = JSON.parse(clean); }
+    catch (e) { throw new Error("La IA devolvió una respuesta que no pude interpretar. Intenta de nuevo."); }
+    const ops = Array.isArray(parsed) ? parsed : (parsed.operations || parsed.ops || parsed.items || []);
+    if (!Array.isArray(ops)) return [];
+    const built = ops.map(o => {
         const base = { id: uid(), include: true, op: o.op };
         if (o.op === "create") {
           return {
@@ -2342,6 +2398,7 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
               brand: (o.brand || "").toString(),
               category: PART_CATS.includes(o.category) ? o.category : "Otro",
               compat: (o.compat || "").toString(),
+              color: (o.color || "").toString(),
               stock: sanitizeField("stock", o.stock),
               cost: sanitizeField("cost", o.cost),
               price: sanitizeField("price", o.price),
@@ -2369,15 +2426,57 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
         }
         return null;
       }).filter(Boolean);
-      if (built.length === 0) {
-        setError("No pude relacionar la instrucción con tu inventario. Revisa el nombre de la pieza.");
-        return;
-      }
+    return built;
+  };
+
+  const ask = async (override) => {
+    const instruction = typeof override === "string" ? override : text;
+    if (!instruction.trim()) return;
+    setLoading(true); setError(null); setPreview(null);
+    try {
+      const built = await askOps(instruction);
+      if (built.length === 0) { setError("No entendí ninguna acción clara o no pude relacionarla con tu inventario. Sé más específico (qué pieza y qué cambio)."); return; }
       setPreview(built);
     } catch (e) {
-      setError("No pude procesar eso. Intenta de nuevo o sé más específico.");
+      setError(e.message || "No pude procesar eso. Intenta de nuevo o sé más específico.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Fotos de libreta / estante: comprime, las manda por lotes a la IA con visión
+  // y junta todo lo leído en UNA sola vista previa editable antes de guardar.
+  const importPhotos = async (fileList) => {
+    const files = Array.from(fileList || []).filter(f => f.type.startsWith("image/")).slice(0, 12);
+    if (!files.length) return;
+    setError(null); setPreview(null);
+    setPhotoMsg(`Preparando ${files.length} foto${files.length > 1 ? "s" : ""}…`);
+    try {
+      const imgs = [];
+      for (const f of files) imgs.push(await fileToJpeg(f));
+      const BATCH = 3;
+      const all = [];
+      let lastError = null;
+      const instruction = "Da de alta en el inventario TODAS las refacciones que se lean en estas FOTOGRAFÍAS (páginas de una libreta de inventario escritas a mano o impresas, o estantes con etiquetas). Por cada renglón o pieza legible crea una operación 'create': 'name' con la descripción tal como está escrita (corrigiendo solo ortografía obvia), 'stock' con la cantidad si aparece, 'cost' con el costo si aparece y 'price' con el precio de venta si aparece. Si solo hay UN precio, asume que es el de venta ('price') y deja 'cost' en 0. Incluye 'brand', 'compat' y 'color' cuando se distingan. Si una pieza ya existe en el INVENTARIO ACTUAL, usa 'restock' en lugar de 'create'. NO inventes piezas: si un renglón no se lee con claridad, omítelo.";
+      for (let i = 0; i < imgs.length; i += BATCH) {
+        const upto = Math.min(imgs.length, i + BATCH);
+        setPhotoMsg(imgs.length > BATCH ? `Leyendo con IA las fotos ${i + 1}–${upto} de ${imgs.length}…` : "Leyendo las fotos con IA…");
+        try {
+          const built = await askOps(instruction, imgs.slice(i, upto));
+          all.push(...built);
+        } catch (e) { lastError = e; }
+      }
+      if (!all.length) {
+        setError((lastError && lastError.message) || "No pude leer piezas en las fotos. Procura buena luz, la página completa y bien enfocada.");
+        return;
+      }
+      setText(`📷 ${files.length} foto${files.length > 1 ? "s" : ""} de inventario`);
+      setPreview(all);
+      if (lastError) showToast("Algunas fotos no se pudieron leer; revisa la vista previa");
+    } catch (e) {
+      setError(e.message || "No pude procesar las fotos.");
+    } finally {
+      setPhotoMsg(null);
     }
   };
 
@@ -2445,17 +2544,26 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
             {loading ? "Pensando…" : "Pedir a la IA"}
           </button>
           <span style={{ fontSize: 12, color: "var(--muted-2)" }}>o</span>
-          <label style={{ ...btnGhost, cursor: (loading || fileBusy) ? "default" : "pointer", opacity: (loading || fileBusy) ? 0.6 : 1 }} title="Sube una factura, lista CSV, XML del SAT (CFDI) o PDF">
+          <label style={{ ...btnGhost, cursor: (loading || fileBusy || photoMsg) ? "default" : "pointer", opacity: (loading || fileBusy || photoMsg) ? 0.6 : 1 }} title="Sube una factura, lista CSV, XML del SAT (CFDI) o PDF">
             {fileBusy ? <Loader2 size={15} className="spin" /> : <Upload size={15} />}
             {fileBusy ? "Leyendo archivo…" : "Importar factura / CSV / XML / PDF"}
-            <input type="file" accept=".csv,.xml,.pdf,.txt,text/csv,text/xml,application/xml,application/pdf,text/plain" hidden disabled={loading || fileBusy}
+            <input type="file" accept=".csv,.xml,.pdf,.txt,text/csv,text/xml,application/xml,application/pdf,text/plain" hidden disabled={loading || fileBusy || !!photoMsg}
               onChange={e => { const f = e.target.files[0]; e.target.value = ""; if (f) importFile(f); }} />
+          </label>
+          <span style={{ fontSize: 12, color: "var(--muted-2)" }}>o</span>
+          <label style={{ ...btnGhost, cursor: (loading || fileBusy || photoMsg) ? "default" : "pointer", opacity: (loading || fileBusy || photoMsg) ? 0.6 : 1 }}
+            title="Toma fotos de tu libreta de inventario o del estante; la IA las lee y te muestra la lista para revisar. Puedes elegir varias fotos a la vez.">
+            {photoMsg ? <Loader2 size={15} className="spin" /> : <Camera size={15} />}
+            {photoMsg || "Fotos de libreta / estante"}
+            <input type="file" accept="image/*" multiple hidden disabled={loading || fileBusy || !!photoMsg}
+              onChange={e => { const fs = e.target.files; const arr = fs ? Array.from(fs) : []; e.target.value = ""; if (arr.length) importPhotos(arr); }} />
           </label>
         </div>
         <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 8 }}>
-          El importador lee facturas de proveedor (incluyendo XML CFDI del SAT), listas CSV y PDFs con texto, y saca las refacciones para que las revises.
+          El importador lee facturas de proveedor (incluyendo XML CFDI del SAT), listas CSV y PDFs con texto. Con las fotos, puedes retratar página por página tu libreta (hasta 12 fotos por tanda, con buena luz) y la IA convierte lo escrito en inventario para que lo revises antes de guardar.
         </div>
         {error && <div style={{ color: "#e25c5c", fontSize: 12, marginTop: 10 }}>{error}</div>}
+        <datalist id="part-colors">{PART_COLORS.map(c => <option key={c} value={c} />)}</datalist>
       </Card>
 
       {preview && (
@@ -2471,6 +2579,7 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
                   <div style={{ marginTop: 6 }}>
                     <input value={it.fields.name} onChange={e => updField(it.id, "name", e.target.value)} style={{ width: 180, padding: "5px 7px", marginRight: 6 }} />
                     <input value={it.fields.compat} placeholder="moto" onChange={e => updField(it.id, "compat", e.target.value)} style={{ width: 80, padding: "5px 7px", marginRight: 6 }} />
+                    <input value={it.fields.color} placeholder="color" list="part-colors" onChange={e => updField(it.id, "color", e.target.value)} style={{ width: 74, padding: "5px 7px", marginRight: 6 }} />
                     <span style={miniLbl}>cant.</span><input type="number" value={it.fields.stock} onChange={e => updField(it.id, "stock", e.target.value)} style={miniNum} />
                     <span style={miniLbl}>costo</span><input type="number" value={it.fields.cost} onChange={e => updField(it.id, "cost", e.target.value)} style={miniNum} />
                     <span style={miniLbl}>precio</span><input type="number" value={it.fields.price} onChange={e => updField(it.id, "price", e.target.value)} style={miniNum} />
@@ -2788,7 +2897,7 @@ function TicketModal({ sale, shop, setShop, logo, onClose }) {
                 <tr key={idx}>
                   <td style={tkTd}>{i.qty}</td>
                   <td style={{ ...tkTd, textAlign: "left" }}>
-                    {i.name}
+                    {i.name}{i.color ? ` (${i.color})` : ""}
                     <div style={{ fontSize: 10, color: "#444" }}>{fmt(i.price)} c/u</div>
                   </td>
                   <td style={{ ...tkTd, textAlign: "right" }}>{fmt(i.qty * i.price)}</td>

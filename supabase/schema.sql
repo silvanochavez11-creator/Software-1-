@@ -51,12 +51,15 @@ create table if not exists public.parts (
   brand       text,
   category    text,
   compat      text,
+  color       text,
   stock       numeric default 0,
   min_stock   numeric default 0,
   cost        numeric default 0,
   price       numeric default 0,
   created_at  timestamptz default now()
 );
+-- Para bases ya creadas: agrega la columna si falta
+alter table public.parts add column if not exists color text;
 
 -- Ventas (los renglones de la venta van en 'items' como JSON)
 create table if not exists public.sales (

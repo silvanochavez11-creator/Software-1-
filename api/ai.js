@@ -18,8 +18,21 @@ export default async function handler(req, res) {
 
   // Body (Vercel ya lo parsea cuando es JSON)
   const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
-  const { system, user, model, org_id } = body;
+  const { system, user, model, org_id, images } = body;
   if (!user) { res.status(400).json({ error: "Falta el contenido a procesar" }); return; }
+
+  // Imágenes opcionales (fotos de libreta/estante): máximo 4 por llamada, solo data-URLs de imagen
+  let imgs = [];
+  if (images != null) {
+    if (!Array.isArray(images) || images.length > 4) { res.status(400).json({ error: "Máximo 4 fotos por llamada" }); return; }
+    for (const im of images) {
+      if (typeof im !== "string" || !im.startsWith("data:image/") || im.length > 2_500_000) {
+        res.status(400).json({ error: "Formato de foto no válido o foto demasiado pesada" });
+        return;
+      }
+    }
+    imgs = images;
+  }
 
   // Solo usuarios autenticados (evita que cualquiera gaste tu saldo de OpenAI)
   const auth = req.headers.authorization || "";
@@ -63,7 +76,12 @@ export default async function handler(req, res) {
         response_format: { type: "json_object" },
         messages: [
           ...(system ? [{ role: "system", content: system }] : []),
-          { role: "user", content: String(user) },
+          {
+            role: "user",
+            content: imgs.length
+              ? [{ type: "text", text: String(user) }, ...imgs.map(u => ({ type: "image_url", image_url: { url: u, detail: "high" } }))]
+              : String(user),
+          },
         ],
       }),
     });

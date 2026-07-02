@@ -1,6 +1,8 @@
-nombre,sku,marca,categoria,compatibilidad,stock,minimo,costo,precio
-Carburador,HON-01,Honda,Motor,Honda XR 150,3,1,150,200
-Balatas delanteras,ITK-FT150-BAL,Italika,Frenos,FT150,10,2,80,130
-Bujia NGK,NGK-CR7,NGK,Eléctrico,Varios,25,5,45,75
-Kit de arrastre,DM200-KIT,Italika,Transmisión,DM200,4,1,350,520
-Aceite 20w50 1L,ACE-2050,Motul,Aceites y lubricantes,Universal,30,6,90,140
+nombre,sku,marca,categoria,compatibilidad,color,stock,minimo,costo,precio
+Carburador,HON-01,Honda,Motor,Honda XR 150,,3,1,150,200
+Balatas delanteras,ITK-FT150-BAL,Italika,Frenos,FT150,,10,2,80,130
+Bujia NGK,NGK-CR7,NGK,Eléctrico,Varios,,25,5,45,75
+Kit de arrastre,DM200-KIT,Italika,Transmisión,DM200,,4,1,350,520
+Aceite 20w50 1L,ACE-2050,Motul,Aceites y lubricantes,Universal,,30,6,90,140
+Salpicadera delantera,ITK-FT150-SAL-R,Italika,Carrocería,FT150,Rojo,2,1,180,290
+Salpicadera delantera,ITK-FT150-SAL-N,Italika,Carrocería,FT150,Negro,3,1,180,290

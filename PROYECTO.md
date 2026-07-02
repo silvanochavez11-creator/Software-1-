@@ -93,14 +93,16 @@ Se aplican en 3 capas: UI (candados y topes), base de datos (triggers `parts_lim
 - Por refaccionaria: Tablero, Inventario (CRUD, buscar, importar/exportar CSV, vaciar),
   Punto de venta (descuenta stock, calcula utilidad, tickets imprimibles con folio y logo),
   Gastos, Contabilidad (estado de resultados por Hoy/Semana/Mes/Histórico, gráficas por día/semana/mes).
-- Asistente IA (GPT): maneja inventario por texto e importa archivos (CSV/XML/CFDI/PDF).
+- Asistente IA (GPT): maneja inventario por texto, importa archivos (CSV/XML/CFDI/PDF) y
+  **lee fotografías** de libretas de inventario o estantes (visión, hasta 12 fotos por tanda).
+- Piezas con **color** (columna `color`; correr `supabase/migracion-color.sql` en bases ya creadas).
+- Historial de ventas con buscador (folio/cliente/fecha/pieza) y **reimpresión de tickets** con fecha y hora.
 - Avisos de stock: campana con contador, niveles de color, aviso al vender, lista de reorden.
 - Personalización por negocio: nombre, logo, color de marca, tema claro/oscuro, stock mínimo por defecto.
 - Recuperación de contraseña por correo.
 
 ## 💡 Ideas pendientes (posibles siguientes pasos)
 
-- 📸 **Foto de facturas de papel** (GPT visión) para el importador.
 - 📧 / 📲 **Avisos por correo o WhatsApp** de stock bajo (requiere SMTP / API de WhatsApp).
 - 👥 **Empleados con roles** por refaccionaria (varios usuarios, permisos).
 - 💾 **Respaldo / exportación** de datos por negocio; reporte mensual para el contador.
