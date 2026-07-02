@@ -84,6 +84,10 @@ Se aplican en 3 capas: UI (candados y topes), base de datos (triggers `parts_lim
 
 ## ✅ Funciones ya hechas
 
+- **Agente IA de ventas en el catálogo (Elite)**: chat flotante público (`/api/catalogo-ia.js`,
+  gpt-4o-mini) que responde solo con el inventario publicable y canaliza el cierre a WhatsApp.
+  Control de gasto: tope de 400 mensajes/día por negocio (`catalog_chat_tick`,
+  migración `supabase/migracion-agente.sql`) + límite por visitante en el cliente.
 - **Catálogo público (Elite)**: enlace `aivoraia.com/c/SLUG` sin login; el público ve piezas,
   precios (opcional) y disponibilidad, busca por modelo y pide por WhatsApp. Se configura en
   "Negocio" (activar, WhatsApp, mostrar precios). Acceso anónimo SOLO vía funciones

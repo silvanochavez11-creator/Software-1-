@@ -500,6 +500,37 @@ function PublicCatalog({ slug }) {
   const [q, setQ] = useState("");
   const [brand, setBrand] = useState(null);
   const [cat, setCat] = useState("");
+  // Chat con el agente IA de ventas
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMsgs, setChatMsgs] = useState([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+  const chatEndRef = useRef(null);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMsgs, chatOpen, chatBusy]);
+
+  const sendChat = async () => {
+    const text = chatInput.trim();
+    if (!text || chatBusy) return;
+    const userCount = chatMsgs.filter(m => m.role === "user").length;
+    const next = [...chatMsgs, { role: "user", content: text }];
+    setChatMsgs(next); setChatInput("");
+    if (userCount >= 15) {
+      setChatMsgs(m => [...m, { role: "assistant", content: "Para seguirte atendiendo bien, mejor escríbenos directo por WhatsApp con el botón de arriba. 🙌" }]);
+      return;
+    }
+    setChatBusy(true);
+    try {
+      const r = await fetch("/api/catalogo-ia", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, messages: next.slice(-8) }),
+      });
+      const data = await r.json();
+      setChatMsgs(m => [...m, { role: "assistant", content: (r.ok && data.text) ? data.text : (data.error || "Perdón, tuve un problema. Escríbenos por WhatsApp y te atendemos al momento.") }]);
+    } catch (e) {
+      setChatMsgs(m => [...m, { role: "assistant", content: "Perdón, tuve un problema de conexión. Escríbenos por WhatsApp y te atendemos al momento." }]);
+    } finally { setChatBusy(false); }
+  };
 
   useEffect(() => {
     (async () => {
@@ -640,6 +671,50 @@ function PublicCatalog({ slug }) {
           Catálogo creado con <a href="/" style={{ color: "var(--accent)", fontWeight: 700, textDecoration: "none" }}>Aivoraia</a> · ¿Tienes una refaccionaria? Crea el tuyo.
         </div>
       </div>
+
+      {/* Agente IA de ventas (chat flotante) */}
+      {chatOpen && (
+        <div style={{ position: "fixed", right: 14, bottom: 84, width: 350, maxWidth: "calc(100vw - 28px)", height: 440, maxHeight: "calc(100vh - 120px)", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden", zIndex: 70, boxShadow: "0 18px 50px #00000066" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 14px", borderBottom: "1px solid var(--border)", background: "var(--surface)" }}>
+            <div style={{ width: 30, height: 30, borderRadius: 9, background: "var(--accent-soft)", display: "flex", alignItems: "center", justifyContent: "center" }}><Sparkles size={16} color="var(--accent)" /></div>
+            <div style={{ flex: 1 }}>
+              <div className="sg" style={{ fontSize: 13, fontWeight: 700 }}>Asistente de {info.name}</div>
+              <div style={{ fontSize: 10, color: "var(--muted)" }}>Te ayudo a encontrar tu pieza</div>
+            </div>
+            <button onClick={() => setChatOpen(false)} style={{ background: "none", border: "none", color: "var(--muted)" }}><X size={17} /></button>
+          </div>
+          <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+            {chatMsgs.length === 0 && (
+              <div style={{ fontSize: 13, background: "var(--surface)", borderRadius: "12px 12px 12px 4px", padding: "9px 12px", color: "var(--text-2)", maxWidth: "85%" }}>
+                ¡Hola! 👋 Soy el asistente de {info.name}. Dime qué pieza buscas o para qué moto es (ej. "balatas para FT150") y te digo si la tenemos{info.show_prices ? " y en cuánto" : ""}.
+              </div>
+            )}
+            {chatMsgs.map((m, i) => (
+              <div key={i} style={{
+                fontSize: 13, lineHeight: 1.5, padding: "9px 12px", maxWidth: "85%", whiteSpace: "pre-wrap",
+                alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                background: m.role === "user" ? "var(--accent)" : "var(--surface)",
+                color: m.role === "user" ? "#0c1118" : "var(--text-2)",
+                borderRadius: m.role === "user" ? "12px 12px 4px 12px" : "12px 12px 12px 4px",
+                fontWeight: m.role === "user" ? 600 : 400,
+              }}>{m.content}</div>
+            ))}
+            {chatBusy && <div style={{ fontSize: 12, color: "var(--muted)", padding: "4px 8px" }}>Escribiendo…</div>}
+            <div ref={chatEndRef} />
+          </div>
+          <div style={{ display: "flex", gap: 6, padding: 10, borderTop: "1px solid var(--border)" }}>
+            <input value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === "Enter" && sendChat()}
+              placeholder="Escribe tu pregunta…" style={{ flex: 1, fontSize: 14 }} autoFocus />
+            <button onClick={sendChat} disabled={chatBusy || !chatInput.trim()} style={{ ...btnGold, padding: "8px 14px", opacity: chatBusy || !chatInput.trim() ? 0.5 : 1 }}>
+              <ArrowRight size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+      <button onClick={() => setChatOpen(v => !v)} title="Pregúntale al asistente"
+        style={{ position: "fixed", right: 14, bottom: 16, zIndex: 70, display: "flex", alignItems: "center", gap: 8, background: "var(--accent)", color: "#0c1118", border: "none", borderRadius: 999, padding: "13px 18px", fontWeight: 700, fontSize: 13, boxShadow: "0 10px 30px #00000055" }}>
+        <Sparkles size={17} /> {chatOpen ? "Cerrar" : "¿Qué pieza buscas?"}
+      </button>
     </div>
   );
 }
@@ -667,7 +742,7 @@ function LandingPage({ onEnter }) {
   const plans = [
     { name: "Básico", price: "$299", per: "MXN/mes", hl: false, items: ["Hasta 300 productos en inventario", "1 usuario", "Tablero con métricas del mes", "Inventario manual + importación CSV", "Punto de venta con ticket", "Alertas de stock bajo", "Soporte WhatsApp en horario hábil"] },
     { name: "Pro", price: "$599", per: "MXN/mes", hl: true, badge: "⭐ Más popular", items: ["Hasta 1,500 productos", "3 usuarios", "Todo lo del Plan Básico", "Módulo de gastos completo", "Contabilidad con histórico", "Asistente IA para inventario", "Importación de facturas XML, CSV y PDF", "Soporte prioritario WhatsApp"] },
-    { name: "Elite", price: "$999", per: "MXN/mes", hl: false, items: ["Productos ilimitados", "Usuarios ilimitados", "Todo lo del Plan Pro", "Catálogo público en línea con tu enlace", "Onboarding en persona o videollamada", "Soporte dedicado mismo día", "Configuración inicial incluida"], soon: "Agente IA de ventas en tu catálogo (próximamente)" },
+    { name: "Elite", price: "$999", per: "MXN/mes", hl: false, items: ["Productos ilimitados", "Usuarios ilimitados", "Todo lo del Plan Pro", "Catálogo público en línea con tu enlace", "Agente IA de ventas que atiende a tus clientes", "Onboarding en persona o videollamada", "Soporte dedicado mismo día", "Configuración inicial incluida"] },
   ];
   const faqs = [
     { q: "¿Necesito instalar algo?", a: "No. Funciona en el navegador de cualquier computadora, tablet o celular con internet. Tus datos se guardan en la nube y puedes entrar desde donde estés." },

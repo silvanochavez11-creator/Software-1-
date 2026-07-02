@@ -225,6 +225,36 @@ $$;
 grant execute on function public.catalog_info(text) to anon, authenticated;
 grant execute on function public.catalog_parts(text) to anon, authenticated;
 
+-- Agente IA del catálogo: contador de mensajes por día (control de gasto)
+create table if not exists public.catalog_chat_usage (
+  slug  text not null,
+  day   date not null default current_date,
+  count int  not null default 0,
+  primary key (slug, day)
+);
+alter table public.catalog_chat_usage enable row level security;
+
+create or replace function public.catalog_chat_tick(slug_in text)
+returns boolean language plpgsql security definer set search_path = public as $$
+declare c int;
+begin
+  if not exists (
+    select 1 from public.organizations o
+    where o.catalog_slug = lower(trim(slug_in))
+      and o.catalog_enabled and o.status = 'active'
+      and coalesce(o.plan, 'basico') = 'elite'
+  ) then
+    return false;
+  end if;
+  insert into public.catalog_chat_usage as u (slug, day, count)
+  values (lower(trim(slug_in)), current_date, 1)
+  on conflict (slug, day) do update set count = u.count + 1
+  returning count into c;
+  return c <= 400;  -- tope: 400 mensajes al día por negocio
+end; $$;
+
+grant execute on function public.catalog_chat_tick(text) to anon, authenticated;
+
 -- ---------- Crear el profile automáticamente al registrarse ----------------
 
 create or replace function public.handle_new_user()
