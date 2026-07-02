@@ -273,8 +273,8 @@ const db = {
 const orgFromDb = (r) => ({ id: r.id, name: r.name, logo: r.logo_url || "", accent: r.accent || DEFAULT_ACCENT, defaultMin: Number(r.default_min_stock) || 0, status: r.status || "active", theme: r.theme || "dark", plan: PLANS[r.plan] ? r.plan : "basico", paidUntil: r.paid_until || "", createdAt: (r.created_at || "").slice(0, 10) });
 const orgToDb = (o) => { const r = { name: o.name, logo_url: o.logo || null, accent: o.accent || DEFAULT_ACCENT }; if (o.defaultMin != null) r.default_min_stock = Number(o.defaultMin) || 0; if (o.theme != null) r.theme = o.theme; if (o.plan != null) r.plan = PLANS[o.plan] ? o.plan : "basico"; if (o.paidUntil !== undefined) r.paid_until = o.paidUntil || null; return r; };
 
-const partFromDb = (r) => ({ id: r.id, sku: r.sku || "", name: r.name, brand: r.brand || "", category: r.category || "Otro", compat: r.compat || "", color: r.color || "", stock: Number(r.stock) || 0, minStock: Number(r.min_stock) || 0, cost: Number(r.cost) || 0, price: Number(r.price) || 0 });
-const partToDb = (p, org_id) => ({ id: p.id, org_id, sku: p.sku || null, name: p.name, brand: p.brand || null, category: p.category || null, compat: p.compat || null, color: p.color || null, stock: Number(p.stock) || 0, min_stock: Number(p.minStock) || 0, cost: Number(p.cost) || 0, price: Number(p.price) || 0 });
+const partFromDb = (r) => ({ id: r.id, sku: r.sku || "", name: r.name, brand: r.brand || "", category: r.category || "Otro", compat: r.compat || "", color: r.color || "", stock: Number(r.stock) || 0, minStock: Number(r.min_stock) || 0, cost: Number(r.cost) || 0, price: Number(r.price) || 0, priceWholesale: Number(r.price_wholesale) || 0 });
+const partToDb = (p, org_id) => ({ id: p.id, org_id, sku: p.sku || null, name: p.name, brand: p.brand || null, category: p.category || null, compat: p.compat || null, color: p.color || null, stock: Number(p.stock) || 0, min_stock: Number(p.minStock) || 0, cost: Number(p.cost) || 0, price: Number(p.price) || 0, price_wholesale: Number(p.priceWholesale) || 0 });
 
 // La hora exacta de la venta se recupera de created_at (el instante en que se guardó)
 const saleFromDb = (r) => ({ id: r.id, folio: r.folio, customer: r.customer || "", items: r.items || [], total: Number(r.total) || 0, cogs: Number(r.cogs) || 0, profit: Number(r.profit) || 0, date: r.sold_at, time: r.created_at ? new Date(r.created_at).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) : "" });
@@ -1721,7 +1721,7 @@ function TopVendidos({ sales }) {
 }
 
 /* ---------- Inventario ---------- */
-const emptyPart = () => ({ sku: "", name: "", brand: "", category: PART_CATS[0], compat: "", color: "", stock: "", minStock: "", cost: "", price: "" });
+const emptyPart = () => ({ sku: "", name: "", brand: "", category: PART_CATS[0], compat: "", color: "", stock: "", minStock: "", cost: "", price: "", priceWholesale: "" });
 
 function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = null, planLabel = "" }) {
   const roomLeft = maxParts != null ? Math.max(0, maxParts - parts.length) : Infinity;
@@ -1775,6 +1775,7 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
       minStock: String(form.minStock).trim() !== "" ? Math.max(0, parseInt(form.minStock) || 0) : defaultMin,
       cost: Math.max(0, parseFloat(form.cost) || 0),
       price: Math.max(0, parseFloat(form.price) || 0),
+      priceWholesale: Math.max(0, parseFloat(form.priceWholesale) || 0),
     };
     if (editId) {
       setParts(prev => prev.map(p => p.id === editId ? { ...p, ...part } : p));
@@ -1789,7 +1790,7 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
 
   const startEdit = (p) => {
     setEditId(p.id);
-    setForm({ sku: p.sku || "", name: p.name, brand: p.brand || "", category: p.category, compat: p.compat || "", color: p.color || "", stock: p.stock, minStock: p.minStock, cost: p.cost, price: p.price });
+    setForm({ sku: p.sku || "", name: p.name, brand: p.brand || "", category: p.category, compat: p.compat || "", color: p.color || "", stock: p.stock, minStock: p.minStock, cost: p.cost, price: p.price, priceWholesale: p.priceWholesale || "" });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -1800,7 +1801,7 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
   const exportCSV = () => {
     const csv = Papa.unparse(parts.map(p => ({
       sku: p.sku, nombre: p.name, marca: p.brand, categoria: p.category, compatibilidad: p.compat, color: p.color,
-      stock: p.stock, minimo: p.minStock, costo: p.cost, precio: p.price
+      stock: p.stock, minimo: p.minStock, costo: p.cost, precio: p.price, preciomayoreo: p.priceWholesale || ""
     })));
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -1829,7 +1830,8 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
       stock: ["stock", "cantidad", "existencia", "existencias", "qty", "piezas", "cant", "cantidaddisponible", "enexistencia"],
       minStock: ["minimo", "min", "stockminimo", "minstock", "minimostock"],
       cost: ["costo", "cost", "compra", "costounitario", "preciocompra", "preciodecompra", "costodecompra"],
-      price: ["precio", "price", "venta", "precioventa", "preciodeventa", "pventa", "precioventaunitario", "pvp", "preciopublico"],
+      price: ["precio", "price", "venta", "precioventa", "preciodeventa", "pventa", "precioventaunitario", "pvp", "preciopublico", "menudeo", "preciomenudeo"],
+      priceWholesale: ["preciomayoreo", "mayoreo", "preciodemayoreo", "pmayoreo", "wholesale", "preciomayorista"],
     };
     Papa.parse(file, {
       header: true, skipEmptyLines: true,
@@ -1857,6 +1859,7 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
             minStock: minRaw !== "" ? Math.max(0, Math.round(parseNum(minRaw))) : defaultMin,
             cost: Math.max(0, parseNum(pick(r, "cost"))),
             price: Math.max(0, parseNum(pick(r, "price"))),
+            priceWholesale: Math.max(0, parseNum(pick(r, "priceWholesale"))),
           });
         }
         if (!added.length) {
@@ -1894,7 +1897,8 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
           <div><label style={lbl}>Stock</label><input type="number" placeholder="0" value={form.stock} onChange={e => setForm(f => ({ ...f, stock: e.target.value }))} style={{ width: "100%" }} /></div>
           <div><label style={lbl}>Stock mínimo</label><input type="number" placeholder={`Por defecto: ${defaultMin}`} value={form.minStock} onChange={e => setForm(f => ({ ...f, minStock: e.target.value }))} style={{ width: "100%" }} /></div>
           <div><label style={lbl}>Costo unitario</label><input type="number" placeholder="0" value={form.cost} onChange={e => setForm(f => ({ ...f, cost: e.target.value }))} style={{ width: "100%" }} /></div>
-          <div><label style={lbl}>Precio de venta</label><input type="number" placeholder="0" value={form.price} onChange={e => setForm(f => ({ ...f, price: e.target.value }))} style={{ width: "100%" }} /></div>
+          <div><label style={lbl}>Precio menudeo</label><input type="number" placeholder="0" value={form.price} onChange={e => setForm(f => ({ ...f, price: e.target.value }))} style={{ width: "100%" }} /></div>
+          <div><label style={lbl}>Precio mayoreo (opcional)</label><input type="number" placeholder="0" value={form.priceWholesale} onChange={e => setForm(f => ({ ...f, priceWholesale: e.target.value }))} style={{ width: "100%" }} /></div>
         </div>
         {form.cost && form.price && (
           <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>
@@ -2019,7 +2023,10 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
                         {low && <div style={{ fontSize: 10, color: stColor }}>{STATUS_META[status].label} · mín {p.minStock}</div>}
                       </td>
                       <td style={{ textAlign: "right", color: "var(--muted)" }}>{fmt(p.cost)}</td>
-                      <td style={{ textAlign: "right", fontWeight: 600 }}>{fmt(p.price)}</td>
+                      <td style={{ textAlign: "right", fontWeight: 600 }}>
+                        {fmt(p.price)}
+                        {(Number(p.priceWholesale) || 0) > 0 && <div style={{ fontSize: 10, color: "var(--muted)", fontWeight: 500 }}>may. {fmt(p.priceWholesale)}</div>}
+                      </td>
                       <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                         <button onClick={() => startEdit(p)} style={iconBtn}><Pencil size={14} /></button>
                         <button onClick={() => del(p.id)} style={iconBtn}><Trash2 size={14} /></button>
@@ -2042,6 +2049,20 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
   const [q, setQ] = useState("");
   const [customer, setCustomer] = useState("");
   const [histQ, setHistQ] = useState(""); // buscador del historial de ventas
+  const [saleType, setSaleType] = useState("menudeo"); // menudeo | mayoreo
+
+  // Precio que corresponde a una pieza según el tipo de venta
+  const priceFor = (p, type = saleType) =>
+    type === "mayoreo" && (Number(p.priceWholesale) || 0) > 0 ? Number(p.priceWholesale) : (Number(p.price) || 0);
+
+  // Al cambiar el tipo de venta, recalcula los precios de lo que ya está en el carrito
+  const switchSaleType = (type) => {
+    setSaleType(type);
+    setCart(prev => prev.map(i => {
+      const p = parts.find(x => x.id === i.partId);
+      return p ? { ...i, price: priceFor(p, type) } : i;
+    }));
+  };
 
   // Historial: sin búsqueda muestra las recientes; buscando filtra TODAS las ventas
   const histResults = useMemo(() => {
@@ -2071,7 +2092,7 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
         if (ex.qty >= p.stock) { showToast("No hay más stock"); return prev; }
         return prev.map(i => i.partId === p.id ? { ...i, qty: i.qty + 1 } : i);
       }
-      return [...prev, { partId: p.id, name: p.name, color: p.color || "", sku: p.sku, qty: 1, price: Number(p.price) || 0, cost: Number(p.cost) || 0, maxStock: Number(p.stock) || 0 }];
+      return [...prev, { partId: p.id, name: p.name, color: p.color || "", sku: p.sku, qty: 1, price: priceFor(p), cost: Number(p.cost) || 0, maxStock: Number(p.stock) || 0 }];
     });
     setQ("");
   };
@@ -2098,6 +2119,7 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
       date: todayStr(),
       time: new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }),
       customer: customer.trim(),
+      type: saleType,
       items: cart.map(({ partId, name, color, sku, qty, price, cost }) => ({ partId, name, color, sku, qty, price, cost })),
       total, cogs, profit,
     };
@@ -2106,7 +2128,7 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
       const line = cart.find(i => i.partId === p.id);
       return line ? { ...p, stock: Math.max(0, (Number(p.stock) || 0) - line.qty) } : p;
     }));
-    setCart([]); setCustomer("");
+    setCart([]); setCustomer(""); setSaleType("menudeo");
     // Aviso si alguna pieza quedó en su mínimo (o agotada) tras esta venta
     const lowAfter = [];
     for (const i of cart) {
@@ -2135,7 +2157,10 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
               <div style={{ fontSize: 11, color: "var(--muted-2)" }}>{[p.brand, p.color, p.compat].filter(Boolean).join(" · ") || p.sku || "—"} · {p.stock} en stock</div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontWeight: 600, fontSize: 13 }}>{fmt(p.price)}</span>
+              <span style={{ fontWeight: 600, fontSize: 13, color: saleType === "mayoreo" && (Number(p.priceWholesale) || 0) > 0 ? "var(--accent)" : "var(--text)" }}>
+                {fmt(priceFor(p))}
+                {saleType === "mayoreo" && (Number(p.priceWholesale) || 0) === 0 && <span style={{ fontSize: 10, color: "var(--muted-2)", fontWeight: 500 }}> (sin mayoreo)</span>}
+              </span>
               <Plus size={16} color="var(--accent)" />
             </div>
           </div>
@@ -2170,7 +2195,20 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
       </Card>
 
       <Card>
-        <SectionTitle icon={ShoppingCart}>Venta actual</SectionTitle>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <SectionTitle icon={ShoppingCart}>Venta actual</SectionTitle>
+          <div style={{ flex: 1 }} />
+          <div style={{ display: "flex", gap: 4 }}>
+            {[["menudeo", "Menudeo"], ["mayoreo", "Mayoreo"]].map(([id, label]) => (
+              <button key={id} onClick={() => switchSaleType(id)} title={id === "mayoreo" ? "Usa el precio de mayoreo de las piezas que lo tengan" : "Precio normal de mostrador"} style={{
+                padding: "5px 12px", borderRadius: 7, fontSize: 12, fontWeight: 700,
+                border: saleType === id ? "1px solid var(--accent)" : "1px solid var(--border)",
+                background: saleType === id ? "var(--accent-soft)" : "transparent",
+                color: saleType === id ? "var(--accent)" : "var(--muted)",
+              }}>{label}</button>
+            ))}
+          </div>
+        </div>
         {cart.length === 0 ? (
           <EmptyState text="Busca y toca refacciones para agregarlas a la venta." />
         ) : (
@@ -2501,9 +2539,9 @@ function Contabilidad({ sales, expenses, allowHistory = true, org = null, shop =
 }
 
 /* ---------- Asistente IA (alta masiva de inventario desde texto) ---------- */
-const NUMERIC_FIELDS = ["stock", "minStock", "cost", "price"];
-const FIELD_LABEL = { name: "nombre", brand: "marca", category: "categoría", compat: "compatibilidad", color: "color", stock: "stock", minStock: "mínimo", cost: "costo", price: "precio" };
-const MONEY_FIELDS = new Set(["cost", "price"]);
+const NUMERIC_FIELDS = ["stock", "minStock", "cost", "price", "priceWholesale"];
+const FIELD_LABEL = { name: "nombre", brand: "marca", category: "categoría", compat: "compatibilidad", color: "color", stock: "stock", minStock: "mínimo", cost: "costo", price: "precio", priceWholesale: "precio mayoreo" };
+const MONEY_FIELDS = new Set(["cost", "price", "priceWholesale"]);
 const sanitizeField = (field, val) =>
   NUMERIC_FIELDS.includes(field) ? Math.max(0, (field === "stock" || field === "minStock" ? parseInt(val) : parseFloat(val)) || 0) : String(val ?? "");
 const showVal = (field, v) => MONEY_FIELDS.has(field) ? fmt(v) : String(v);
@@ -2542,9 +2580,9 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
     // Snapshot del inventario con un 'ref' para que la IA pueda apuntar a piezas existentes
     const refList = parts.map((p, i) => ({
       ref: i, name: p.name, brand: p.brand || "", compat: p.compat || "", color: p.color || "",
-      category: p.category, stock: Number(p.stock) || 0, cost: Number(p.cost) || 0, price: Number(p.price) || 0,
+      category: p.category, stock: Number(p.stock) || 0, cost: Number(p.cost) || 0, price: Number(p.price) || 0, priceWholesale: Number(p.priceWholesale) || 0,
     }));
-    const SYSTEM = "Eres asistente del inventario de una refaccionaria de motos. Recibes (1) el INVENTARIO ACTUAL como arreglo JSON (cada pieza tiene 'ref' numérico, name, brand, compat, color, category, stock, cost, price) y (2) una INSTRUCCIÓN del usuario en español. Devuelve SOLO un objeto JSON con la forma {\"operations\": [ ... ]}, sin texto adicional, sin markdown. Cada elemento de 'operations' es una operación:\n- Crear pieza nueva: {\"op\":\"create\",\"name\":string,\"brand\":string,\"category\":string,\"compat\":string,\"color\":string,\"stock\":number,\"cost\":number,\"price\":number}\n- Modificar una pieza existente: {\"op\":\"update\",\"ref\":number,\"set\":{campo:valor,...}} donde campo ∈ name,brand,category,compat,color,stock,minStock,cost,price. Incluye en 'set' SOLO los campos que cambian, con su valor FINAL ya calculado.\n- Reabastecer (sumar al stock): {\"op\":\"restock\",\"ref\":number,\"add\":number,\"cost\":number(opcional),\"price\":number(opcional)}\n- Eliminar pieza: {\"op\":\"delete\",\"ref\":number}\nReglas: 'category' debe ser una de: Motor, Frenos, Suspensión, Eléctrico, Transmisión, Llantas y cámaras, Aceites y lubricantes, Carrocería, Accesorios, Otro. Si el usuario pide algo relativo (ej. 'sube 10% el precio', 'baja 20 pesos', 'duplica el stock') CALCULA tú el número final usando el valor actual del inventario. Una instrucción puede afectar a varias piezas (ej. 'sube 10% todos los aceites' => varias operaciones update). Si llega mercancía de una pieza que YA existe, usa 'restock'; si es pieza nueva, 'create'; si solo cambian datos de una pieza existente, 'update'. Para identificar la pieza usa name/brand/compat del inventario. Si no estás seguro de a qué pieza se refiere, omítela en lugar de adivinar.";
+    const SYSTEM = "Eres asistente del inventario de una refaccionaria de motos. Recibes (1) el INVENTARIO ACTUAL como arreglo JSON (cada pieza tiene 'ref' numérico, name, brand, compat, color, category, stock, cost, price, priceWholesale) y (2) una INSTRUCCIÓN del usuario en español. 'price' es el precio de menudeo y 'priceWholesale' el de mayoreo (0 = no tiene). Devuelve SOLO un objeto JSON con la forma {\"operations\": [ ... ]}, sin texto adicional, sin markdown. Cada elemento de 'operations' es una operación:\n- Crear pieza nueva: {\"op\":\"create\",\"name\":string,\"brand\":string,\"category\":string,\"compat\":string,\"color\":string,\"stock\":number,\"cost\":number,\"price\":number,\"priceWholesale\":number(opcional)}\n- Modificar una pieza existente: {\"op\":\"update\",\"ref\":number,\"set\":{campo:valor,...}} donde campo ∈ name,brand,category,compat,color,stock,minStock,cost,price,priceWholesale. Incluye en 'set' SOLO los campos que cambian, con su valor FINAL ya calculado.\n- Reabastecer (sumar al stock): {\"op\":\"restock\",\"ref\":number,\"add\":number,\"cost\":number(opcional),\"price\":number(opcional)}\n- Eliminar pieza: {\"op\":\"delete\",\"ref\":number}\nReglas: 'category' debe ser una de: Motor, Frenos, Suspensión, Eléctrico, Transmisión, Llantas y cámaras, Aceites y lubricantes, Carrocería, Accesorios, Otro. Si el usuario pide algo relativo (ej. 'sube 10% el precio', 'baja 20 pesos', 'duplica el stock') CALCULA tú el número final usando el valor actual del inventario. Una instrucción puede afectar a varias piezas (ej. 'sube 10% todos los aceites' => varias operaciones update). Si llega mercancía de una pieza que YA existe, usa 'restock'; si es pieza nueva, 'create'; si solo cambian datos de una pieza existente, 'update'. Para identificar la pieza usa name/brand/compat del inventario. Si no estás seguro de a qué pieza se refiere, omítela en lugar de adivinar.";
     const response = await fetch("/api/ai", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${_session?.access_token || ""}` },
@@ -2572,6 +2610,7 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
               stock: sanitizeField("stock", o.stock),
               cost: sanitizeField("cost", o.cost),
               price: sanitizeField("price", o.price),
+              priceWholesale: sanitizeField("priceWholesale", o.priceWholesale),
             },
           };
         }
@@ -3057,6 +3096,7 @@ function TicketModal({ sale, shop, setShop, logo, onClose }) {
           <div style={{ borderTop: "1px dashed #000", borderBottom: "1px dashed #000", padding: "6px 0", margin: "6px 0" }}>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span>Ticket:</span><span>#{sale.folio}</span></div>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span>Fecha:</span><span>{sale.date} {sale.time || ""}</span></div>
+            {sale.type === "mayoreo" && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Tipo:</span><span>Mayoreo</span></div>}
             {sale.customer && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Cliente:</span><span>{sale.customer}</span></div>}
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
