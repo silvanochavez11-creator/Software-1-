@@ -5,6 +5,12 @@
     <link rel="icon" type="image/png" sizes="64x64" href="/favicon-64.png" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon-180.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#0c1118" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Aivoraia" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Aivoraia · Inventario, punto de venta y contabilidad para refaccionarias</title>
     <meta name="description" content="El sistema completo para tu refaccionaria: inventario, punto de venta, contabilidad y asistente con IA. Todo en la nube, sin instalar nada." />
@@ -18,5 +24,11 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      // Registra el service worker para que la app se pueda instalar en el celular
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+      }
+    </script>
   </body>
 </html>

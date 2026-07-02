@@ -341,6 +341,18 @@ function GlobalStyles() {
       table { width:100%; border-collapse:collapse; }
       th { text-align:left; font-size:11px; color:var(--muted); font-weight:600; padding:8px 8px; border-bottom:1px solid var(--border); }
       td { font-size:13px; padding:9px 8px; border-bottom:1px solid var(--border-soft); }
+      /* ---- Celular / pantallas chicas ---- */
+      @media (max-width: 700px) {
+        /* Evita que iPhone haga zoom al tocar un campo (lo hace si la letra es < 16px) */
+        input, select, textarea { font-size: 16px; }
+        /* Punto de venta y formulario del admin: una sola columna */
+        .pos-grid { grid-template-columns: 1fr !important; }
+        .admin-form-grid { grid-template-columns: 1fr !important; justify-items: center; }
+        .admin-form-grid > div:last-child { width: 100%; }
+        /* Botones y controles con área táctil cómoda */
+        button { min-height: 34px; }
+        th, td { white-space: nowrap; }
+      }
       @media print {
         body * { visibility: hidden !important; }
         .ticket-print, .ticket-print * { visibility: visible !important; }
@@ -1028,7 +1040,7 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
         {/* Crear / editar */}
         <Card style={{ marginBottom: 22 }}>
           <SectionTitle icon={editId ? Pencil : Store}>{editId ? "Editar refaccionaria" : "Nueva refaccionaria"}</SectionTitle>
-          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 16, alignItems: "start" }}>
+          <div className="admin-form-grid" style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 16, alignItems: "start" }}>
             {/* Logo */}
             <div style={{ textAlign: "center" }}>
               <label style={{ cursor: "pointer", display: "block" }}>
@@ -2072,7 +2084,7 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
   };
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 18, alignItems: "start" }}>
+    <div className="pos-grid" style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 18, alignItems: "start" }}>
       <Card>
         <SectionTitle icon={Search}>Buscar refacción</SectionTitle>
         <input autoFocus placeholder="Escribe nombre, SKU o modelo de moto…" value={q} onChange={e => setQ(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />

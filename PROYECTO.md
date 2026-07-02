@@ -100,6 +100,9 @@ Se aplican en 3 capas: UI (candados y topes), base de datos (triggers `parts_lim
 - Avisos de stock: campana con contador, niveles de color, aviso al vender, lista de reorden.
 - Personalización por negocio: nombre, logo, color de marca, tema claro/oscuro, stock mínimo por defecto.
 - Recuperación de contraseña por correo.
+- **Adaptada a celular**: vistas en una columna en pantallas chicas y **PWA instalable**
+  ("Agregar a pantalla de inicio" → abre como app; `public/manifest.webmanifest` + `public/sw.js`,
+  el service worker no cachea nada a propósito para que siempre cargue la versión más nueva).
 
 ## 💡 Ideas pendientes (posibles siguientes pasos)
 
