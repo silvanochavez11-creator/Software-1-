@@ -200,7 +200,11 @@ async function sbAuth(path, body) {
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error_description || data.msg || data.message || "Error de autenticación");
+  if (!res.ok) {
+    const err = new Error(data.error_description || data.msg || data.message || "Error de autenticación");
+    err.status = res.status; // permite distinguir "token inválido" de "falló la red"
+    throw err;
+  }
   return data;
 }
 
@@ -245,14 +249,40 @@ function consumeRecoveryHash() {
     return true;
   } catch (e) { return false; }
 }
-async function refreshSession() {
-  if (!_session?.refresh_token) throw new Error("sin sesión");
-  return saveSession(await sbAuth("token?grant_type=refresh_token", { refresh_token: _session.refresh_token }));
+/* Refresco del token, robusto para celular/Safari:
+   - "single-flight": si varias peticiones piden refrescar a la vez, todas
+     comparten UNA sola llamada (el refresh token de Supabase es de un solo uso;
+     dos refrescos en paralelo invalidan la sesión y "mezclan" el estado).
+   - antes de refrescar relee localStorage: otra pestaña (o la app instalada)
+     pudo haber refrescado ya; en ese caso adopta esa sesión más nueva. */
+let _refreshing = null;
+function refreshSession(force = false) {
+  if (_refreshing) return _refreshing;
+  _refreshing = (async () => {
+    try {
+      const r = await store.get(SESSION_KEY);
+      if (r && r.value) {
+        const s = JSON.parse(r.value);
+        if (s && s.access_token && (!_session || s.expires_at > _session.expires_at)) _session = s;
+      }
+    } catch (e) {}
+    // force: el servidor ya rechazó el token (401), refresca aunque "parezca" vigente
+    if (!force && _session && _session.expires_at > Date.now() + 60000) return _session;
+    if (!_session?.refresh_token) { const e = new Error("sin sesión"); e.status = 401; throw e; }
+    return saveSession(await sbAuth("token?grant_type=refresh_token", { refresh_token: _session.refresh_token }));
+  })().finally(() => { _refreshing = null; });
+  return _refreshing;
 }
 async function restoreSession() {
   try { const r = await store.get(SESSION_KEY); if (r && r.value) _session = JSON.parse(r.value); } catch (e) {}
   if (_session && _session.expires_at < Date.now() + 60000) {
-    try { await refreshSession(); } catch (e) { _session = null; try { store.set(SESSION_KEY, ""); } catch (er) {} }
+    try { await refreshSession(); }
+    catch (e) {
+      // Solo se cierra la sesión si el servidor RECHAZÓ el token. Si lo que
+      // falló fue la red (muy común en celular), se conserva la sesión y se
+      // reintenta el refresco en la siguiente petición.
+      if (e && e.status >= 400 && e.status < 500) { _session = null; try { store.set(SESSION_KEY, ""); } catch (er) {} }
+    }
   }
   return _session;
 }
@@ -262,13 +292,27 @@ async function signOut() {
   try { store.set(SESSION_KEY, ""); } catch (e) {}
 }
 
-async function sbFetch(path, opts = {}) {
+async function sbFetch(path, opts = {}, _retried = false) {
   if (_session && _session.expires_at < Date.now() + 60000 && _session.refresh_token) {
     try { await refreshSession(); } catch (e) {}
   }
   const headers = { apikey: SB_KEY, "Content-Type": "application/json", ...(opts.headers || {}) };
   if (_session?.access_token) headers.Authorization = `Bearer ${_session.access_token}`;
   const res = await fetch(`${SB_URL}/rest/v1/${path}`, { ...opts, headers });
+  // Token vencido a media petición (celular que "despierta"): refresca y reintenta UNA vez
+  if (res.status === 401 && !_retried && _session?.refresh_token) {
+    try { await refreshSession(true); }
+    catch (e) {
+      if (e && e.status >= 400 && e.status < 500) {
+        // La sesión ya no sirve: se limpia y se recarga para no quedar en un estado mezclado
+        _session = null;
+        try { await store.set(SESSION_KEY, ""); } catch (er) {}
+        try { window.location.reload(); } catch (er) {}
+        throw new Error("Tu sesión expiró. Vuelve a iniciar sesión.");
+      }
+    }
+    return sbFetch(path, opts, true);
+  }
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) throw new Error((data && (data.message || data.hint)) || `Error ${res.status}`);
@@ -281,6 +325,8 @@ const db = {
   update: (table, id, patch) => sbFetch(`${table}?id=eq.${id}`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(patch) }),
   upsert: (table, rows) => sbFetch(`${table}?on_conflict=id`, { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(rows) }),
   remove: (table, id) => sbFetch(`${table}?id=eq.${id}`, { method: "DELETE" }),
+  // Llama una función segura de la base (RPC) con la sesión del usuario
+  rpc: (fn, args) => sbFetch(`rpc/${fn}`, { method: "POST", body: JSON.stringify(args || {}) }),
 };
 
 /* ---- Mapeo entre la forma de la app (camelCase) y las columnas de la BD ---- */
@@ -388,30 +434,46 @@ export default function RefaccionariaSaaS() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
   const [orgs, setOrgs] = useState([]);
+  const [roles, setRoles] = useState({}); // org_id -> 'owner' | 'employee'
   const [activeOrgId, setActiveOrgId] = useState(null);
   const [screen, setScreen] = useState("home");
   const [recovery, setRecovery] = useState(false);
   // Sin sesión: null = web pública (landing) · "login"/"register" = pantalla de acceso
   const [authIntent, setAuthIntent] = useState(null);
 
+  const fetchMe = async (uidNow) => {
+    const prof = (await db.select("profiles", `select=*&id=eq.${uidNow}`))?.[0] || { id: uidNow, email: _session.user.email, is_admin: false };
+    let os = [], roleMap = {};
+    if (prof.is_admin) {
+      os = (await db.select("organizations", "select=*&order=created_at.asc")) || [];
+    } else {
+      const mem = (await db.select("memberships", `select=org_id,role&user_id=eq.${uidNow}`)) || [];
+      for (const m of mem) roleMap[m.org_id] = m.role || "owner";
+      const ids = mem.map(m => m.org_id);
+      if (ids.length) os = (await db.select("organizations", `select=*&id=in.(${ids.join(",")})`)) || [];
+    }
+    return { prof, orgs: os.map(orgFromDb), roleMap };
+  };
+
   const loadMe = async () => {
     if (!_session?.user) return;
     const uidNow = _session.user.id;
-    try {
-      const prof = (await db.select("profiles", `select=*&id=eq.${uidNow}`))?.[0] || { id: uidNow, email: _session.user.email, is_admin: false };
-      setProfile(prof);
-      if (prof.is_admin) {
-        const os = await db.select("organizations", "select=*&order=created_at.asc");
-        setOrgs((os || []).map(orgFromDb));
-      } else {
-        const mem = await db.select("memberships", `select=org_id&user_id=eq.${uidNow}`);
-        const ids = (mem || []).map(m => m.org_id);
-        if (ids.length) {
-          const os = await db.select("organizations", `select=*&id=in.(${ids.join(",")})`);
-          setOrgs((os || []).map(orgFromDb));
-        } else setOrgs([]);
-      }
-    } catch (e) { setProfile({ id: uidNow, email: _session.user.email, is_admin: false }); setOrgs([]); }
+    let me = null;
+    try { me = await fetchMe(uidNow); }
+    catch (e) {
+      // Reintenta una vez con token fresco (en celular la primera petición
+      // tras "despertar" la app suele fallar)
+      try { await refreshSession(); me = await fetchMe(uidNow); } catch (e2) { me = null; }
+    }
+    // Si mientras cargaba cambió la cuenta (otro login / logout), no pisar el estado
+    if (_session?.user?.id !== uidNow) return;
+    if (me) {
+      setProfile(me.prof); setOrgs(me.orgs); setRoles(me.roleMap);
+    } else {
+      // Falla de red: conserva lo que ya se tenía de ESTA misma cuenta en vez
+      // de degradar a un usuario vacío (eso hacía que el admin "perdiera" su panel)
+      setProfile(prev => (prev && prev.id === uidNow) ? prev : { id: uidNow, email: _session.user.email, is_admin: false });
+    }
   };
 
   useEffect(() => {
@@ -425,8 +487,37 @@ export default function RefaccionariaSaaS() {
     })();
   }, []);
 
+  // Safari/iPhone: al volver a la pestaña (o a la app instalada), comprueba que
+  // la sesión guardada siga siendo la MISMA cuenta. Si otra pestaña inició o
+  // cerró sesión, se recarga limpio para no mezclar datos de dos cuentas.
+  useEffect(() => {
+    if (booting) return;
+    const check = async () => {
+      try {
+        const r = await store.get(SESSION_KEY);
+        const stored = r && r.value ? JSON.parse(r.value) : null;
+        const storedUid = stored?.user?.id || null;
+        const currentUid = _session?.user?.id || null;
+        if (storedUid !== currentUid) { window.location.reload(); return; }
+        // Misma cuenta: adopta el token más nuevo si otra pestaña ya refrescó
+        if (stored && _session && stored.expires_at > _session.expires_at) _session = stored;
+      } catch (e) {}
+    };
+    const onShow = (e) => { if (e.persisted) check(); };      // regreso desde el caché de navegación
+    const onVis = () => { if (!document.hidden) check(); };    // la pestaña vuelve a estar visible
+    const onStorage = (e) => { if (e.key === SESSION_KEY) check(); }; // otra pestaña cambió la sesión
+    window.addEventListener("pageshow", onShow);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("pageshow", onShow);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [booting]);
+
   const onAuthed = async () => { setSession(_session); await loadMe(); setScreen("home"); };
-  const doSignOut = async () => { await signOut(); setSession(null); setProfile(null); setOrgs([]); setActiveOrgId(null); setScreen("home"); setRecovery(false); setAuthIntent(null); };
+  const doSignOut = async () => { await signOut(); setSession(null); setProfile(null); setOrgs([]); setRoles({}); setActiveOrgId(null); setScreen("home"); setRecovery(false); setAuthIntent(null); };
 
   if (catalogSlug) return <><GlobalStyles /><PublicCatalog slug={catalogSlug} /></>;
   if (booting) return <><GlobalStyles /><Splash /></>;
@@ -439,19 +530,21 @@ export default function RefaccionariaSaaS() {
   const isAdmin = !!profile?.is_admin;
   const activeOrg = orgs.find(o => o.id === activeOrgId);
 
+  const roleOf = (o) => isAdmin ? "owner" : (roles[o.id] || "owner");
+
   let body;
   if (screen === "shop" && activeOrg) {
-    body = <ShopApp key={activeOrg.id} org={activeOrg} onExit={() => isAdmin ? setScreen("home") : doSignOut()} isAdmin={isAdmin} />;
+    body = <ShopApp key={activeOrg.id} org={activeOrg} onExit={() => isAdmin ? setScreen("home") : doSignOut()} isAdmin={isAdmin} role={roleOf(activeOrg)} />;
   } else if (isAdmin) {
     body = <AdminPanel orgs={orgs} reload={loadMe} onEnter={(id) => { setActiveOrgId(id); setScreen("shop"); }} onSignOut={doSignOut} adminEmail={session.user?.email} />;
   } else if (orgs.length === 0) {
-    body = <NoOrgScreen email={session.user?.email} onSignOut={doSignOut} onRetry={loadMe} />;
+    body = <CreateOrgScreen email={session.user?.email} onCreated={loadMe} onSignOut={doSignOut} onRetry={loadMe} />;
   } else {
     const accessible = orgs.filter(o => o.status !== "suspended");
     if (accessible.length === 0) {
       body = <SuspendedScreen onSignOut={doSignOut} onRetry={loadMe} />;
     } else if (accessible.length === 1) {
-      body = <ShopApp key={accessible[0].id} org={accessible[0]} onExit={doSignOut} isAdmin={false} />;
+      body = <ShopApp key={accessible[0].id} org={accessible[0]} onExit={doSignOut} isAdmin={false} role={roleOf(accessible[0])} />;
     } else {
       body = <OrgChooser orgs={accessible} onPick={(id) => { setActiveOrgId(id); setScreen("shop"); }} onSignOut={doSignOut} />;
     }
@@ -735,7 +828,7 @@ function LandingPage({ onEnter }) {
     { icon: Printer, title: "Tickets imprimibles", desc: "Tickets de 80 mm listos para tu impresora térmica, con folio, logo y datos de tu negocio." },
   ];
   const steps = [
-    { n: "1", title: "Crea tu cuenta", desc: "Regístrate con tu correo en menos de un minuto. Sin instalar nada: todo funciona en el navegador." },
+    { n: "1", title: "Crea tu cuenta y tu negocio", desc: "Regístrate con tu correo, ponle nombre y logo a tu refaccionaria y entra de inmediato. Sin instalar nada y sin esperar a nadie." },
     { n: "2", title: "Carga tu inventario", desc: "Captúralo a mano, súbelo en CSV o deja que el asistente de IA lo lea desde tus facturas." },
     { n: "3", title: "Vende y controla", desc: "Cobra en el punto de venta y mira en el tablero cuánto vendes, cuánto gastas y cuánto ganas." },
   ];
@@ -1124,20 +1217,80 @@ function ResetPasswordScreen({ onDone, onCancel }) {
   );
 }
 
-function NoOrgScreen({ email, onSignOut, onRetry }) {
+/* Registro automático: el usuario recién creado arma su refaccionaria aquí
+   mismo (nombre, logo y color) y entra de inmediato como dueño, sin esperar
+   a que el administrador lo asigne. */
+function CreateOrgScreen({ email, onCreated, onSignOut, onRetry }) {
+  const [name, setName] = useState("");
+  const [logo, setLogo] = useState("");
+  const [accent, setAccent] = useState(DEFAULT_ACCENT);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const create = async () => {
+    if (name.trim().length < 2) return setErr("Ponle nombre a tu negocio.");
+    setBusy(true); setErr(null);
+    try {
+      await db.rpc("crear_mi_negocio", { name_in: name.trim(), logo_in: logo || null, accent_in: accent });
+      await onCreated();
+    } catch (e) { setErr(e.message || "No se pudo crear el negocio. Intenta de nuevo."); }
+    finally { setBusy(false); }
+  };
+
   return (
-    <ScreenShell>
-      <div style={{ width: 420, maxWidth: "100%", textAlign: "center" }}>
-        <div style={{ width: 56, height: 56, borderRadius: 14, background: "var(--accent-soft)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 12 }}>
-          <Store size={28} color="var(--accent)" />
+    <ScreenShell accent={accent}>
+      <div style={{ width: 440, maxWidth: "100%" }}>
+        <div style={{ textAlign: "center", marginBottom: 18 }}>
+          <div style={{ width: 56, height: 56, borderRadius: 14, background: "var(--accent-soft)", display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 10 }}>
+            <Store size={28} color="var(--accent)" />
+          </div>
+          <div className="sg" style={{ fontSize: 22, fontWeight: 700 }}>Crea tu refaccionaria</div>
+          <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4, lineHeight: 1.6 }}>
+            Ponle nombre y logo a tu negocio y empieza a usarlo ahora mismo.
+          </div>
         </div>
-        <div className="sg" style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Tu cuenta aún no tiene refaccionaria</div>
-        <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 20, lineHeight: 1.6 }}>
-          Ya iniciaste sesión como <b style={{ color: "var(--text)" }}>{email}</b>, pero el administrador todavía no te ha asignado a un negocio. Pídele que te asigne y luego actualiza.
-        </div>
-        <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
-          <button onClick={onRetry} style={btnGold}><ArrowRight size={15} /> Ya me asignó, actualizar</button>
-          <button onClick={onSignOut} style={btnGhost}><LogOut size={15} /> Salir</button>
+        <Card>
+          <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+            <div style={{ textAlign: "center" }}>
+              <label style={{ cursor: "pointer", display: "block" }}>
+                <div style={{ width: 90, height: 90, borderRadius: 14, border: "1px dashed var(--dashed)", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                  {logo
+                    ? <img src={logo} alt="logo" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    : <div style={{ textAlign: "center", color: "var(--muted-2)" }}><ImagePlus size={20} /><div style={{ fontSize: 10, marginTop: 4 }}>Subir logo</div></div>}
+                </div>
+                <input type="file" accept="image/*" hidden onChange={e => e.target.files[0] && fileToLogo(e.target.files[0], setLogo)} />
+              </label>
+              {logo && <button onClick={() => setLogo("")} style={{ ...btnGhost, padding: "4px 10px", fontSize: 11, marginTop: 6 }}>Quitar</button>}
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={lbl}>Nombre de tu negocio</label>
+              <input value={name} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === "Enter" && create()} placeholder="Ej. Refaccionaria El Pistón" style={{ width: "100%", marginBottom: 12 }} />
+              <label style={lbl}>Color de tu marca</label>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {ACCENT_PRESETS.map(c => (
+                  <button key={c} onClick={() => setAccent(c)} title={c}
+                    style={{ width: 26, height: 26, borderRadius: 7, background: c, border: accent.toLowerCase() === c.toLowerCase() ? "2px solid #fff" : "1px solid var(--border)" }} />
+                ))}
+              </div>
+            </div>
+          </div>
+          {err && <div style={{ color: "#e25c5c", fontSize: 12, marginTop: 12 }}>{err}</div>}
+          <button onClick={create} disabled={busy || name.trim().length < 2} style={{ ...btnGold, width: "100%", justifyContent: "center", marginTop: 14, opacity: busy || name.trim().length < 2 ? 0.6 : 1 }}>
+            {busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />} Crear mi refaccionaria y entrar
+          </button>
+          <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 10, lineHeight: 1.6, textAlign: "center" }}>
+            Empiezas en el plan <b>Básico</b>. Puedes cambiar el nombre, logo y color cuando quieras.
+          </div>
+        </Card>
+
+        {/* Para trabajadores: que NO creen un negocio propio por error */}
+        <div style={{ background: "var(--card)", border: "1px dashed var(--border)", borderRadius: 12, padding: 14, marginTop: 12, fontSize: 12, color: "var(--muted)", lineHeight: 1.6 }}>
+          👷 <b style={{ color: "var(--text-2)" }}>¿Vas a trabajar en la refaccionaria de alguien más?</b> No crees un negocio nuevo:
+          dale tu correo (<b style={{ color: "var(--text-2)" }}>{email}</b>) al dueño para que te agregue a su equipo, y luego pulsa actualizar.
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button onClick={onRetry} style={{ ...btnGhost, padding: "7px 12px", fontSize: 12 }}><ArrowRight size={14} /> Ya me agregaron, actualizar</button>
+            <button onClick={onSignOut} style={{ ...btnGhost, padding: "7px 12px", fontSize: 12 }}><LogOut size={14} /> Salir</button>
+          </div>
         </div>
       </div>
     </ScreenShell>
@@ -1497,7 +1650,8 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
         <div style={{ height: 26 }} />
         <SectionTitle icon={Users}>Cuentas de usuarios ({users.length})</SectionTitle>
         <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>
-          Cuando un dueño se registra, aquí aparece su correo. Asígnalo a su refaccionaria para que pueda entrar y ver solo sus datos.
+          Los dueños nuevos crean su refaccionaria solos al registrarse (y cada dueño agrega a sus vendedores desde "Negocio → Mi equipo").
+          Aquí puedes ver todas las cuentas y, si hace falta, asignar un usuario a un negocio como dueño.
         </div>
         <Card>
           {users.length === 0 ? <EmptyState text="Aún no hay usuarios registrados." /> : users.map(u => {
@@ -1589,13 +1743,16 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
   );
 }
 
-function ShopApp({ org: orgProp, onExit, isAdmin }) {
+function ShopApp({ org: orgProp, onExit, isAdmin, role = "owner" }) {
   const [org, setOrg] = useState(orgProp);
   const K = (k) => `refa:org:${org.id}:${k}`;
   const plan = planOf(org);
   const accent = org.accent || "#d4af37";
   const light = org.theme === "light";
-  const [tab, setTab] = useState("tablero");
+  // Vendedor (role 'employee'): solo punto de venta e inventario de consulta,
+  // sin costos, utilidades, gastos, contabilidad ni configuración del negocio.
+  const isEmployee = role === "employee" && !isAdmin;
+  const [tab, setTab] = useState(isEmployee ? "ventas" : "tablero");
   const [parts, setParts] = useState([]);
   const [sales, setSales] = useState([]);
   const [expenses, setExpenses] = useState([]);
@@ -1633,16 +1790,27 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
   useEffect(() => {
     (async () => {
       try {
-        const [pp, ss, ee] = await Promise.all([
-          db.select("parts", `select=*&org_id=eq.${org.id}&order=created_at.desc`),
-          db.select("sales", `select=*&org_id=eq.${org.id}&order=created_at.desc`),
-          db.select("expenses", `select=*&org_id=eq.${org.id}&order=created_at.desc`),
-        ]);
-        const P = (pp || []).map(partFromDb), S = (ss || []).map(saleFromDb), E = (ee || []).map(expenseFromDb);
-        for (const p of P) partsSnap.current.set(p.id, JSON.stringify(partToDb(p, org.id)));
-        for (const s of S) salesSnap.current.set(s.id, JSON.stringify(saleToDb(s, org.id)));
-        for (const e of E) expensesSnap.current.set(e.id, JSON.stringify(expenseToDb(e, org.id)));
-        setParts(P); setSales(S); setExpenses(E);
+        if (isEmployee) {
+          // El vendedor lee por las funciones seguras: sin costos ni utilidades
+          const [pp, ss] = await Promise.all([
+            db.rpc("employee_parts", { org_in: org.id }),
+            db.rpc("employee_sales", { org_in: org.id }),
+          ]);
+          setParts((pp || []).map(partFromDb));
+          setSales((ss || []).map(saleFromDb));
+          setExpenses([]);
+        } else {
+          const [pp, ss, ee] = await Promise.all([
+            db.select("parts", `select=*&org_id=eq.${org.id}&order=created_at.desc`),
+            db.select("sales", `select=*&org_id=eq.${org.id}&order=created_at.desc`),
+            db.select("expenses", `select=*&org_id=eq.${org.id}&order=created_at.desc`),
+          ]);
+          const P = (pp || []).map(partFromDb), S = (ss || []).map(saleFromDb), E = (ee || []).map(expenseFromDb);
+          for (const p of P) partsSnap.current.set(p.id, JSON.stringify(partToDb(p, org.id)));
+          for (const s of S) salesSnap.current.set(s.id, JSON.stringify(saleToDb(s, org.id)));
+          for (const e of E) expensesSnap.current.set(e.id, JSON.stringify(expenseToDb(e, org.id)));
+          setParts(P); setSales(S); setExpenses(E);
+        }
       } catch (e) { showToast("Error al cargar datos de la nube"); }
       try { const r = await store.get(K("shop")); if (r && r.value) setShop(prev => ({ ...prev, ...JSON.parse(r.value) })); } catch (e) {}
       setLoaded(true);
@@ -1650,18 +1818,19 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
   }, []);
 
   // --- Sincronización a Supabase (con pequeño retardo para agrupar cambios) ---
+  // El vendedor NO sincroniza directo: sus ventas se guardan con registrar_venta.
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || isEmployee) return;
     const t = setTimeout(() => { syncTable("parts", parts, partsSnap.current, p => partToDb(p, org.id)).catch(() => showToast("Error al guardar inventario")); }, 400);
     return () => clearTimeout(t);
   }, [parts, loaded]);
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || isEmployee) return;
     const t = setTimeout(() => { syncTable("sales", sales, salesSnap.current, s => saleToDb(s, org.id)).catch(() => showToast("Error al guardar ventas")); }, 400);
     return () => clearTimeout(t);
   }, [sales, loaded]);
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || isEmployee) return;
     const t = setTimeout(() => { syncTable("expenses", expenses, expensesSnap.current, e => expenseToDb(e, org.id)).catch(() => showToast("Error al guardar gastos")); }, 400);
     return () => clearTimeout(t);
   }, [expenses, loaded]);
@@ -1728,13 +1897,14 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div className="sg" style={{ fontSize: 22, fontWeight: 700, letterSpacing: -0.5 }}>{org.name}</div>
                 <span style={{ fontSize: 10, fontWeight: 700, color: plan.color, border: `1px solid ${plan.color}`, borderRadius: 6, padding: "1px 7px" }} title={`Plan ${plan.label}`}>{plan.label}</span>
+                {isEmployee && <span style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", border: "1px solid var(--border)", borderRadius: 6, padding: "1px 7px" }} title="Cuenta de vendedor: punto de venta e inventario de consulta">VENDEDOR</span>}
               </div>
-              <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>Inventario y contabilidad en un solo lugar</div>
+              <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>{isEmployee ? "Punto de venta e inventario" : "Inventario y contabilidad en un solo lugar"}</div>
             </div>
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <MiniStat label="Valor inventario" value={fmt0(inventoryValue)} color="#3fa9f5" />
-            <MiniStat label="Utilidad del mes" value={fmt0(monthNet)} color={monthNet >= 0 ? "#2ecc71" : "#e25c5c"} />
+            {!isEmployee && <MiniStat label="Valor inventario" value={fmt0(inventoryValue)} color="#3fa9f5" />}
+            {!isEmployee && <MiniStat label="Utilidad del mes" value={fmt0(monthNet)} color={monthNet >= 0 ? "#2ecc71" : "#e25c5c"} />}
             {lowStock.length > 0 && <MiniStat label="Bajo mínimo" value={`${lowStock.length} pza`} color="#e8a13a" />}
             <div style={{ position: "relative" }}>
               <button onClick={() => setShowAlerts(v => !v)} style={{ ...btnGhost, padding: "8px 10px", position: "relative" }} title="Alertas de inventario">
@@ -1749,9 +1919,11 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
                   onGoInventory={() => { setShowAlerts(false); setTab("inventario"); }} />
               )}
             </div>
-            <button onClick={() => setShowSettings(true)} style={{ ...btnGhost, padding: "8px 12px" }} title="Editar nombre, logo y color del negocio">
-              <Pencil size={15} /> Negocio
-            </button>
+            {!isEmployee && (
+              <button onClick={() => setShowSettings(true)} style={{ ...btnGhost, padding: "8px 12px" }} title="Editar nombre, logo, color y equipo del negocio">
+                <Pencil size={15} /> Negocio
+              </button>
+            )}
             <button onClick={onExit} style={{ ...btnGhost, padding: "8px 12px" }} title={isAdmin ? "Volver al panel de administrador" : "Cerrar sesión"}>
               <LogOut size={15} /> {isAdmin ? "Panel" : "Salir"}
             </button>
@@ -1760,14 +1932,19 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 4, marginTop: 18, borderBottom: "1px solid var(--border-soft)", flexWrap: "wrap" }}>
-          {[
-            { id: "tablero", label: "Tablero", icon: BarChart3 },
-            { id: "inventario", label: "Inventario", icon: Package },
-            { id: "ventas", label: "Punto de venta", icon: ShoppingCart },
-            { id: "gastos", label: "Gastos", icon: Receipt, locked: !plan.expenses },
-            { id: "contabilidad", label: "Contabilidad", icon: Wallet },
-            { id: "asistente", label: "Asistente IA", icon: Sparkles, locked: !plan.ai },
-          ].map(t => (
+          {(isEmployee
+            ? [
+                { id: "ventas", label: "Punto de venta", icon: ShoppingCart },
+                { id: "inventario", label: "Inventario", icon: Package },
+              ]
+            : [
+                { id: "tablero", label: "Tablero", icon: BarChart3 },
+                { id: "inventario", label: "Inventario", icon: Package },
+                { id: "ventas", label: "Punto de venta", icon: ShoppingCart },
+                { id: "gastos", label: "Gastos", icon: Receipt, locked: !plan.expenses },
+                { id: "contabilidad", label: "Contabilidad", icon: Wallet },
+                { id: "asistente", label: "Asistente IA", icon: Sparkles, locked: !plan.ai },
+              ]).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               title={t.locked ? "Disponible desde el plan Pro" : undefined}
               style={{
@@ -1782,7 +1959,7 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
       </div>
 
       <div style={{ maxWidth: 1040, margin: "0 auto", padding: "20px" }}>
-        {tab === "tablero" && (
+        {tab === "tablero" && !isEmployee && (
           <Tablero
             inventoryValue={inventoryValue} inventoryRetail={inventoryRetail} lowStock={lowStock}
             monthRevenue={monthRevenue} monthNet={monthNet} monthGross={monthGross}
@@ -1790,19 +1967,19 @@ function ShopApp({ org: orgProp, onExit, isAdmin }) {
           />
         )}
         {tab === "inventario" && (
-          <Inventario parts={parts} setParts={setParts} showToast={showToast} defaultMin={org.defaultMin || 0} maxParts={plan.maxParts} planLabel={plan.label} />
+          <Inventario parts={parts} setParts={setParts} showToast={showToast} defaultMin={org.defaultMin || 0} maxParts={plan.maxParts} planLabel={plan.label} readOnly={isEmployee} showCost={!isEmployee} />
         )}
         {tab === "ventas" && (
-          <PuntoDeVenta parts={parts} setParts={setParts} sales={sales} setSales={setSales} showToast={showToast} onTicket={setTicketSale} />
+          <PuntoDeVenta parts={parts} setParts={setParts} sales={sales} setSales={setSales} showToast={showToast} onTicket={setTicketSale} employeeMode={isEmployee} org={org} />
         )}
-        {tab === "gastos" && (plan.expenses
+        {tab === "gastos" && !isEmployee && (plan.expenses
           ? <Gastos expenses={expenses} setExpenses={setExpenses} showToast={showToast} />
           : <LockedFeature feature="El módulo de gastos" />
         )}
-        {tab === "contabilidad" && (
+        {tab === "contabilidad" && !isEmployee && (
           <Contabilidad sales={sales} expenses={expenses} allowHistory={plan.history} org={org} shop={shop} />
         )}
-        {tab === "asistente" && (plan.ai
+        {tab === "asistente" && !isEmployee && (plan.ai
           ? <Asistente parts={parts} setParts={setParts} showToast={showToast} defaultMin={org.defaultMin || 0} org={org} maxParts={plan.maxParts} />
           : <LockedFeature feature="El Asistente IA" />
         )}
@@ -2047,7 +2224,7 @@ function TopVendidos({ sales }) {
 /* ---------- Inventario ---------- */
 const emptyPart = () => ({ sku: "", name: "", brand: "", category: PART_CATS[0], compat: "", color: "", stock: "", minStock: "", cost: "", price: "", priceWholesale: "" });
 
-function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = null, planLabel = "" }) {
+function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = null, planLabel = "", readOnly = false, showCost = true }) {
   const roomLeft = maxParts != null ? Math.max(0, maxParts - parts.length) : Infinity;
   const [brandFilter, setBrandFilter] = useState(null); // null = todas | "__none__" = sin marca | texto = marca
 
@@ -2205,6 +2382,7 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
 
   return (
     <div>
+      {!readOnly && (
       <Card style={{ marginBottom: 18 }}>
         <SectionTitle icon={editId ? Pencil : Plus}>{editId ? "Editar refacción" : "Agregar refacción"}</SectionTitle>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, marginBottom: 8 }}>
@@ -2244,11 +2422,12 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
           {parts.length > 0 && <button onClick={exportCSV} style={btnGhost}><Upload size={15} style={{ transform: "rotate(180deg)" }} /> Exportar CSV</button>}
         </div>
       </Card>
+      )}
 
       <Card>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-          <SectionTitle icon={Package}>Inventario ({maxParts != null ? `${parts.length}/${maxParts}` : parts.length})</SectionTitle>
-          {maxParts != null && parts.length >= maxParts * 0.9 && (
+          <SectionTitle icon={Package}>Inventario ({maxParts != null && !readOnly ? `${parts.length}/${maxParts}` : parts.length})</SectionTitle>
+          {!readOnly && maxParts != null && parts.length >= maxParts * 0.9 && (
             <span style={{ fontSize: 11, color: "#e8a13a", fontWeight: 600 }}>
               {roomLeft <= 0 ? "Límite del plan alcanzado" : `Te quedan ${roomLeft} espacios en tu plan`}
             </span>
@@ -2258,7 +2437,7 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
             <Search size={14} color="var(--muted-2)" style={{ position: "absolute", left: 10, top: 11 }} />
             <input placeholder="Buscar pieza, marca, moto…" value={q} onChange={e => setQ(e.target.value)} style={{ paddingLeft: 30, width: 240 }} />
           </div>
-          {parts.length > 0 && (
+          {!readOnly && parts.length > 0 && (
             <button onClick={() => setWipeStep(1)} style={btnDanger} title="Eliminar todo el inventario">
               <Trash2 size={15} /> Vaciar inventario
             </button>
@@ -2313,15 +2492,15 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
           </div>
         )}
         {filtered.length === 0 ? (
-          <EmptyState text={parts.length === 0 ? "Aún no hay refacciones. Agrega la primera arriba o importa un CSV." : "Sin resultados para tu búsqueda."} />
+          <EmptyState text={parts.length === 0 ? (readOnly ? "Aún no hay refacciones en el inventario." : "Aún no hay refacciones. Agrega la primera arriba o importa un CSV.") : "Sin resultados para tu búsqueda."} />
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table>
               <thead>
                 <tr>
                   <th>Refacción</th><th>Categoría</th><th>Compatibilidad</th>
-                  <th style={{ textAlign: "right" }}>Stock</th><th style={{ textAlign: "right" }}>Costo</th>
-                  <th style={{ textAlign: "right" }}>Precio</th><th></th>
+                  <th style={{ textAlign: "right" }}>Stock</th>{showCost && <th style={{ textAlign: "right" }}>Costo</th>}
+                  <th style={{ textAlign: "right" }}>Precio</th>{!readOnly && <th></th>}
                 </tr>
               </thead>
               <tbody>
@@ -2342,21 +2521,23 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
                       <td style={{ color: "var(--muted)" }}>{p.compat || "—"}</td>
                       <td style={{ textAlign: "right" }}>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}>
-                          <button onClick={() => adjustStock(p.id, -1)} style={stepBtn}>−</button>
+                          {!readOnly && <button onClick={() => adjustStock(p.id, -1)} style={stepBtn}>−</button>}
                           <span style={{ fontWeight: 700, minWidth: 28, textAlign: "center", color: low ? stColor : "var(--text)" }}>{p.stock}</span>
-                          <button onClick={() => adjustStock(p.id, +1)} style={stepBtn}>+</button>
+                          {!readOnly && <button onClick={() => adjustStock(p.id, +1)} style={stepBtn}>+</button>}
                         </div>
                         {low && <div style={{ fontSize: 10, color: stColor }}>{STATUS_META[status].label} · mín {p.minStock}</div>}
                       </td>
-                      <td style={{ textAlign: "right", color: "var(--muted)" }}>{fmt(p.cost)}</td>
+                      {showCost && <td style={{ textAlign: "right", color: "var(--muted)" }}>{fmt(p.cost)}</td>}
                       <td style={{ textAlign: "right", fontWeight: 600 }}>
                         {fmt(p.price)}
                         {(Number(p.priceWholesale) || 0) > 0 && <div style={{ fontSize: 10, color: "var(--muted)", fontWeight: 500 }}>may. {fmt(p.priceWholesale)}</div>}
                       </td>
-                      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                        <button onClick={() => startEdit(p)} style={iconBtn}><Pencil size={14} /></button>
-                        <button onClick={() => del(p.id)} style={iconBtn}><Trash2 size={14} /></button>
-                      </td>
+                      {!readOnly && (
+                        <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                          <button onClick={() => startEdit(p)} style={iconBtn}><Pencil size={14} /></button>
+                          <button onClick={() => del(p.id)} style={iconBtn}><Trash2 size={14} /></button>
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
@@ -2370,12 +2551,13 @@ function Inventario({ parts, setParts, showToast, defaultMin = 0, maxParts = nul
 }
 
 /* ---------- Punto de venta ---------- */
-function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket }) {
+function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket, employeeMode = false, org = null }) {
   const [cart, setCart] = useState([]); // {partId, name, sku, qty, price, cost, maxStock}
   const [q, setQ] = useState("");
   const [customer, setCustomer] = useState("");
   const [histQ, setHistQ] = useState(""); // buscador del historial de ventas
   const [saleType, setSaleType] = useState("menudeo"); // menudeo | mayoreo
+  const [charging, setCharging] = useState(false); // evita doble cobro (modo vendedor)
 
   // Precio que corresponde a una pieza según el tipo de venta
   const priceFor = (p, type = saleType) =>
@@ -2441,7 +2623,35 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
   const cogs = cart.reduce((a, i) => a + i.qty * i.cost, 0);
   const profit = total - cogs;
 
+  // Cobro del VENDEDOR: la venta se registra en el servidor (registrar_venta),
+  // que cobra a precio de lista, calcula la utilidad con los costos reales
+  // (que el vendedor no ve) y descuenta el stock de forma segura.
+  const checkoutEmployee = async () => {
+    if (cart.length === 0) return showToast("Agrega piezas a la venta");
+    if (charging) return;
+    setCharging(true);
+    try {
+      const sale = saleFromDb(await db.rpc("registrar_venta", {
+        org_in: org.id,
+        items_in: cart.map(i => ({ part_id: i.partId, qty: i.qty })),
+        customer_in: customer.trim() || null,
+        tipo_in: saleType,
+      }));
+      setSales(prev => [sale, ...prev]);
+      setParts(prev => prev.map(p => {
+        const line = cart.find(i => i.partId === p.id);
+        return line ? { ...p, stock: Math.max(0, (Number(p.stock) || 0) - line.qty) } : p;
+      }));
+      setCart([]); setCustomer(""); setSaleType("menudeo");
+      showToast(`Venta #${sale.folio} registrada: ${fmt(sale.total)}`);
+      onTicket && onTicket(sale);
+    } catch (e) {
+      showToast(e.message || "No se pudo registrar la venta. Intenta de nuevo.");
+    } finally { setCharging(false); }
+  };
+
   const checkout = () => {
+    if (employeeMode) return checkoutEmployee();
     if (cart.length === 0) return showToast("Agrega piezas a la venta");
     // Validate stock still available
     for (const i of cart) {
@@ -2527,7 +2737,7 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
             <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--border-soft)", fontSize: 12 }}>
               <span style={{ color: "var(--muted)" }}>{s.folio ? `#${s.folio} · ` : ""}{s.date}{s.time ? ` ${s.time}` : ""} · {s.items.reduce((a, i) => a + i.qty, 0)} pza{s.customer ? ` · ${s.customer}` : ""}</span>
               <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontWeight: 600 }}>{fmt(s.total)} <span style={{ color: "#2ecc71", fontWeight: 500 }}>(+{fmt0(s.profit)})</span></span>
+                <span style={{ fontWeight: 600 }}>{fmt(s.total)}{!employeeMode && <span style={{ color: "#2ecc71", fontWeight: 500 }}> (+{fmt0(s.profit)})</span>}</span>
                 <button onClick={() => onTicket && onTicket(s)} style={iconBtn} title="Reimprimir ticket"><Printer size={14} /></button>
               </span>
             </div>
@@ -2562,7 +2772,9 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
                 </div>
                 <input type="number" value={i.qty} onChange={e => setQty(i.partId, e.target.value)} style={{ width: 56 }} title="Cantidad" />
                 <span style={{ color: "var(--muted-2)" }}>×</span>
-                <input type="number" value={i.price} onChange={e => setLinePrice(i.partId, e.target.value)} style={{ width: 84 }} title="Precio unitario" />
+                {employeeMode
+                  ? <span style={{ fontSize: 13, minWidth: 84, textAlign: "right", color: "var(--muted)" }} title="Precio de lista (solo el dueño puede cambiarlo)">{fmt(i.price)}</span>
+                  : <input type="number" value={i.price} onChange={e => setLinePrice(i.partId, e.target.value)} style={{ width: 84 }} title="Precio unitario" />}
                 <span style={{ fontWeight: 600, fontSize: 13, minWidth: 70, textAlign: "right" }}>{fmt0(i.qty * i.price)}</span>
                 <button onClick={() => removeLine(i.partId)} style={iconBtn}><Trash2 size={14} /></button>
               </div>
@@ -2570,11 +2782,11 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket })
             <input placeholder="Cliente (opcional)" value={customer} onChange={e => setCustomer(e.target.value)} style={{ width: "100%", marginTop: 12 }} />
             <div style={{ marginTop: 12, padding: "12px 0", borderTop: "1px solid var(--border)" }}>
               <Row label="Total" value={fmt(total)} big />
-              <Row label="Costo de mercancía" value={fmt(cogs)} muted />
-              <Row label="Utilidad de esta venta" value={fmt(profit)} color="#2ecc71" />
+              {!employeeMode && <Row label="Costo de mercancía" value={fmt(cogs)} muted />}
+              {!employeeMode && <Row label="Utilidad de esta venta" value={fmt(profit)} color="#2ecc71" />}
             </div>
-            <button onClick={checkout} style={{ ...btnGold, width: "100%", justifyContent: "center", marginTop: 8 }}>
-              <Check size={16} /> Cobrar y descontar de inventario
+            <button onClick={checkout} disabled={charging} style={{ ...btnGold, width: "100%", justifyContent: "center", marginTop: 8, opacity: charging ? 0.6 : 1 }}>
+              {charging ? <Loader2 size={16} className="spin" /> : <Check size={16} />} Cobrar y descontar de inventario
             </button>
           </>
         )}
@@ -3316,8 +3528,42 @@ function ShopSettings({ org, saveOrg, onClose, showToast, applyMinToZero }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const accent = form.accent || DEFAULT_ACCENT;
-  const isElite = planOf(org).id === "elite";
+  const plan = planOf(org);
+  const isElite = plan.id === "elite";
   const catalogUrl = org.catalogSlug ? `${window.location.origin}/c/${org.catalogSlug}` : null;
+
+  // --- Mi equipo (dueño + vendedores) ---
+  const [team, setTeam] = useState(null); // null = cargando
+  const [tEmail, setTEmail] = useState("");
+  const [tBusy, setTBusy] = useState(false);
+  const [tMsg, setTMsg] = useState(null); // { ok, text }
+  const maxUsers = plan.maxUsers;
+  const teamFull = maxUsers != null && (team || []).length >= maxUsers;
+
+  const loadTeam = async () => {
+    try { setTeam(await db.rpc("org_members", { org_in: org.id }) || []); }
+    catch (e) { setTeam([]); }
+  };
+  useEffect(() => { loadTeam(); }, []);
+
+  const addEmployee = async () => {
+    const email = tEmail.trim();
+    if (!email) return;
+    setTBusy(true); setTMsg(null);
+    try {
+      await db.rpc("org_add_employee", { org_in: org.id, email_in: email });
+      setTEmail("");
+      setTMsg({ ok: true, text: "Listo: ya puede entrar con su correo y solo verá el punto de venta y el inventario (sin costos)." });
+      await loadTeam();
+    } catch (e) { setTMsg({ ok: false, text: e.message || "No se pudo agregar." }); }
+    finally { setTBusy(false); }
+  };
+  const removeMember = async (m) => {
+    setTBusy(true); setTMsg(null);
+    try { await db.rpc("org_remove_member", { membership_in: m.membership_id }); await loadTeam(); }
+    catch (e) { setTMsg({ ok: false, text: e.message || "No se pudo quitar." }); }
+    finally { setTBusy(false); }
+  };
 
   const save = async () => {
     if (!form.name.trim()) return setErr("Ponle un nombre al negocio");
@@ -3406,6 +3652,50 @@ function ShopSettings({ org, saveOrg, onClose, showToast, applyMinToZero }) {
               ))}
             </div>
           </div>
+        </div>
+
+        {/* Mi equipo: el dueño agrega vendedores con permisos limitados */}
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border-soft)" }}>
+          <label style={lbl}>👥 Mi equipo {maxUsers != null && team != null ? `(${team.length}/${maxUsers} usuarios de tu plan ${plan.label})` : ""}</label>
+          <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.6, marginBottom: 10 }}>
+            Un <b>vendedor</b> solo puede cobrar en el punto de venta (a precio de lista) y consultar el inventario.
+            <b> No ve</b> costos, utilidades, gastos ni contabilidad, y no puede modificar el inventario ni borrar ventas.
+          </div>
+          {team == null ? (
+            <div style={{ fontSize: 12, color: "var(--muted-2)" }}>Cargando equipo…</div>
+          ) : (
+            <>
+              {team.map(m => (
+                <div key={m.membership_id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: "1px solid var(--border-soft)" }}>
+                  <div style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.email || "(sin correo)"}</div>
+                  <span style={{ fontSize: 10, fontWeight: 700, borderRadius: 6, padding: "2px 8px", flexShrink: 0, color: m.role === "owner" ? "var(--accent)" : "var(--muted)", border: `1px solid ${m.role === "owner" ? "var(--accent)" : "var(--border)"}` }}>
+                    {m.role === "owner" ? "Dueño" : "Vendedor"}
+                  </span>
+                  {m.role === "employee" && (
+                    <button onClick={() => removeMember(m)} disabled={tBusy} style={{ ...iconBtn, color: "#e25c5c" }} title="Quitar del equipo"><X size={14} /></button>
+                  )}
+                </div>
+              ))}
+              {teamFull ? (
+                <div style={{ fontSize: 11, color: "#e8a13a", marginTop: 10, lineHeight: 1.6 }}>
+                  Tu plan {plan.label} permite {maxUsers} usuario{maxUsers > 1 ? "s" : ""} y ya está lleno. Contacta a Aivoraia para subir de plan y agregar más vendedores.
+                </div>
+              ) : (
+                <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+                  <input type="email" placeholder="correo-del-vendedor@ejemplo.com" value={tEmail} onChange={e => setTEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && addEmployee()} style={{ flex: 1, minWidth: 200 }} />
+                  <button onClick={addEmployee} disabled={tBusy || !tEmail.trim()} style={{ ...btnGold, padding: "8px 14px", opacity: tBusy || !tEmail.trim() ? 0.6 : 1 }}>
+                    {tBusy ? <Loader2 size={14} className="spin" /> : <UserPlus size={14} />} Agregar
+                  </button>
+                </div>
+              )}
+              {tMsg && <div style={{ fontSize: 12, color: tMsg.ok ? "#2ecc71" : "#e25c5c", marginTop: 8, lineHeight: 1.5 }}>{tMsg.text}</div>}
+              {!teamFull && (
+                <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 8, lineHeight: 1.6 }}>
+                  El vendedor primero debe crear su cuenta (gratis) en {window.location.origin.replace(/^https?:\/\//, "")} con el correo que agregues aquí.
+                </div>
+              )}
+            </>
+          )}
         </div>
 
         {/* Catálogo público (Elite) */}

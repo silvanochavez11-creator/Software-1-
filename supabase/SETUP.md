@@ -8,6 +8,10 @@ así que solo faltan unos ajustes en el panel de Supabase.
 En **SQL Editor → New query**, pega el contenido de [`schema.sql`](./schema.sql) y pulsa
 **Run**. Debe decir *"Success. No rows returned"*. (Esto ya lo hiciste.)
 
+Después corre también [`migracion-equipo-registro.sql`](./migracion-equipo-registro.sql)
+(roles dueño/vendedor + registro automático de negocios). En una base que ya existía,
+basta con correr esa migración una vez.
+
 ## 2. Desactivar la confirmación por correo (para empezar más fácil)
 
 Para que los registros funcionen al instante sin tener que abrir un correo de confirmación:
@@ -31,13 +35,24 @@ Para que los registros funcionen al instante sin tener que abrir un correo de co
 
 4. En la app, **cierra sesión y entra otra vez** (o recarga). Ya verás el **Panel de administrador**.
 
-## 4. Flujo de cuentas (Opción A)
+## 4. Flujo de cuentas
 
-1. En el panel, **creas la refaccionaria** (nombre, logo, color).
-2. El **dueño** entra a la app y se **registra** con su correo y contraseña.
-3. En tu panel, baja a **"Cuentas de usuarios"**: ahí aparece su correo. Usa el menú
-   **"Asignar a…"** para ligarlo a su refaccionaria.
-4. El dueño recarga la app y entra directo a SU negocio (solo ve sus datos).
+**Dueños (registro automático):**
+
+1. El dueño se **registra** con su correo y contraseña.
+2. La app le pide **nombre, logo y color** de su refaccionaria y la crea al instante
+   (queda en plan Básico; tú le asignas su plan real desde el panel de admin).
+
+**Vendedores (los agrega cada dueño):**
+
+1. El vendedor **crea su cuenta** (gratis) con su correo.
+2. El dueño entra a **"Negocio → 👥 Mi equipo"** y agrega ese correo (respetando el
+   límite de usuarios de su plan).
+3. El vendedor entra y solo ve **Punto de venta** e **Inventario de consulta** — sin
+   costos, utilidades, gastos ni contabilidad, y vende siempre a precio de lista.
+
+Desde tu panel de admin también puedes seguir creando refaccionarias y asignando
+dueños a mano (menú **"Asignar a…"** en "Cuentas de usuarios").
 
 ## Sobre las llaves
 

@@ -6,7 +6,7 @@ Este documento resume TODO lo necesario para continuar el proyecto en una sesió
 
 - **App en vivo:** https://aivoraia.com (también `software-1-livid.vercel.app`)
 - **Repositorio:** `silvanochavez11-creator/software-1-`
-- **Rama de trabajo:** `claude/moto-parts-inventory-accounting-1jzn39`
+- **Rama de trabajo:** `claude/inventory-workshop-motos-362lzo`
 - **Supabase (base de datos + auth):** proyecto `npxjpkcyfgxfbdvvlcrx`
 - **Vercel (hosting):** proyecto `software-1` (equipo "Aivora", plan Hobby)
 - **IA:** OpenAI (`gpt-4o-mini`)
@@ -84,6 +84,25 @@ Se aplican en 3 capas: UI (candados y topes), base de datos (triggers `parts_lim
 
 ## ✅ Funciones ya hechas
 
+- **Equipo con roles (dueño / vendedor)**: el dueño agrega vendedores por correo en
+  "Negocio → 👥 Mi equipo" (respetando el límite de usuarios del plan). El **vendedor**
+  solo ve Punto de venta e Inventario de consulta: no ve costos, utilidades, gastos ni
+  contabilidad; no puede modificar inventario, cambiar precios (vende SIEMPRE a precio
+  de lista, menudeo o mayoreo) ni borrar ventas. Está aplicado en la BASE DE DATOS, no
+  solo en la interfaz: RLS deja las tablas solo para dueño/admin y el vendedor opera vía
+  funciones seguras `employee_parts` / `employee_sales` / `registrar_venta` (esta última
+  registra la venta y descuenta stock del lado del servidor, con costos reales que él no ve).
+  Migración: `supabase/migracion-equipo-registro.sql`.
+- **Registro automático (autoservicio)**: al registrarse, el usuario crea su propia
+  refaccionaria (nombre + logo + color) con la función `crear_mi_negocio` y entra al
+  instante como dueño en plan Básico — ya no espera a que el admin lo asigne. La pantalla
+  también avisa a los trabajadores que NO creen negocio y pidan al dueño agregarlos.
+- **Sesión robusta en celular/Safari (iPhone)**: se corrigió que la página "mezclara"
+  sesiones. Ahora el refresco del token es único aunque varias peticiones lo pidan a la
+  vez (el refresh token de Supabase es de un solo uso), se coordina entre pestañas por
+  localStorage, ante un 401 se refresca y reintenta una vez, la sesión NO se cierra por
+  fallas de red (solo si el servidor rechaza el token), y al volver a la pestaña/app se
+  detecta si otra pestaña cambió de cuenta y se recarga limpio.
 - **Agente IA de ventas en el catálogo (Elite)**: chat flotante público (`/api/catalogo-ia.js`,
   gpt-4o-mini) que responde solo con el inventario publicable y canaliza el cierre a WhatsApp.
   Control de gasto: tope de 400 mensajes/día por negocio (`catalog_chat_tick`,
@@ -115,10 +134,13 @@ Se aplican en 3 capas: UI (candados y topes), base de datos (triggers `parts_lim
   ("Agregar a pantalla de inicio" → abre como app; `public/manifest.webmanifest` + `public/sw.js`,
   el service worker no cachea nada a propósito para que siempre cargue la versión más nueva).
 
+> ⚠️ **Migración pendiente de correr en Supabase**: `supabase/migracion-equipo-registro.sql`
+> (roles dueño/vendedor + registro automático). Sin ella, los vendedores no pueden entrar
+> y el registro autoservicio falla. Correrla una vez en el SQL Editor.
+
 ## 💡 Ideas pendientes (posibles siguientes pasos)
 
 - 📧 / 📲 **Avisos por correo o WhatsApp** de stock bajo (requiere SMTP / API de WhatsApp).
-- 👥 **Empleados con roles** por refaccionaria (varios usuarios, permisos).
 - 💾 **Respaldo / exportación** de datos por negocio; reporte mensual para el contador.
 - 🧾 **Clientes y fiados** (cuentas por cobrar).
 - ✉️ **SMTP propio** para que los correos (recuperación) no caigan en spam.

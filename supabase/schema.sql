@@ -327,21 +327,33 @@ drop policy if exists mem_admin_write on public.memberships;
 create policy mem_admin_write on public.memberships for all
   using (public.is_admin()) with check (public.is_admin());
 
--- parts / sales / expenses: el admin todo; el dueño solo lo de SU org
+-- parts / sales / expenses: acceso directo solo para el admin y el DUEÑO.
+-- El VENDEDOR (role 'employee') no toca las tablas directamente: usa las
+-- funciones seguras employee_parts / employee_sales / registrar_venta, que
+-- ocultan costos y utilidades y venden siempre a precio de lista (anti-robos).
 drop policy if exists parts_rw on public.parts;
-create policy parts_rw on public.parts for all
-  using (public.is_admin() or public.is_member(org_id))
-  with check (public.is_admin() or public.is_member(org_id));
+drop policy if exists parts_owner_all on public.parts;
+create policy parts_owner_all on public.parts for all
+  using (public.is_admin() or public.is_owner(org_id))
+  with check (public.is_admin() or public.is_owner(org_id));
 
 drop policy if exists sales_rw on public.sales;
-create policy sales_rw on public.sales for all
-  using (public.is_admin() or public.is_member(org_id))
-  with check (public.is_admin() or public.is_member(org_id));
+drop policy if exists sales_owner_all on public.sales;
+create policy sales_owner_all on public.sales for all
+  using (public.is_admin() or public.is_owner(org_id))
+  with check (public.is_admin() or public.is_owner(org_id));
 
 drop policy if exists expenses_rw on public.expenses;
-create policy expenses_rw on public.expenses for all
-  using (public.is_admin() or public.is_member(org_id))
-  with check (public.is_admin() or public.is_member(org_id));
+drop policy if exists expenses_owner_all on public.expenses;
+create policy expenses_owner_all on public.expenses for all
+  using (public.is_admin() or public.is_owner(org_id))
+  with check (public.is_admin() or public.is_owner(org_id));
+
+-- ---------- Equipo (dueño/vendedor) y registro automático --------------------
+-- Las funciones employee_parts, employee_sales, registrar_venta, org_members,
+-- org_add_employee, org_remove_member y crear_mi_negocio viven en
+-- supabase/migracion-equipo-registro.sql. En una base nueva, corre ese archivo
+-- justo después de este.
 
 -- ============================================================================
 --  PASO FINAL (después de registrarte por primera vez en la app):
