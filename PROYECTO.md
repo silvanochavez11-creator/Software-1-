@@ -138,9 +138,20 @@ Se aplican en 3 capas: UI (candados y topes), base de datos (triggers `parts_lim
   ("Agregar a pantalla de inicio" → abre como app; `public/manifest.webmanifest` + `public/sw.js`,
   el service worker no cachea nada a propósito para que siempre cargue la versión más nueva).
 
-> ⚠️ **Migración pendiente de correr en Supabase**: `supabase/migracion-equipo-registro.sql`
-> (roles dueño/vendedor + registro automático). Sin ella, los vendedores no pueden entrar
-> y el registro autoservicio falla. Correrla una vez en el SQL Editor.
+- **Prueba Elite 15 días gratis (autoservicio)**: al crear su negocio, el usuario puede
+  activar 15 días del plan Elite sin tarjeta (`crear_mi_negocio` con `trial_in`; columna
+  `organizations.trial`, `paid_until = hoy + 15`). La app muestra los días restantes y al
+  vencer el negocio funciona como Básico; el catálogo público y los agentes IA se apagan
+  solos al vencer (funciones catalog_* y /api/ai). El admin ve la etiqueta "PRUEBA" /
+  "PRUEBA VENCIDA" en su panel. Migración: `supabase/migracion-prueba-elite.sql`.
+- **Landing con demo animada y pantallas reales**: sección "Míralo en acción" (#demo) con
+  3 escenas animadas (tablero de ceros a métricas, punto de venta generando ticket,
+  contabilidad por día/semana/mes) + galería de capturas reales (`public/demo/*.webp`)
+  con visor en grande. CTAs de "Probar Elite 15 días gratis" en hero, precios y cierre.
+
+> ⚠️ **Migraciones pendientes de correr en Supabase** (una vez, en el SQL Editor):
+> 1. `supabase/migracion-equipo-registro.sql` — roles dueño/vendedor + registro automático. ✅ (ya corrida el 2026-07-04)
+> 2. `supabase/migracion-prueba-elite.sql` — prueba Elite 15 días + apagado del catálogo al vencer.
 
 ## 💡 Ideas pendientes (posibles siguientes pasos)
 

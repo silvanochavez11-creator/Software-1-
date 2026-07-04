@@ -50,15 +50,20 @@ export default async function handler(req, res) {
   // (o todos si es admin), así que no puede pedir por el negocio de otro.
   try {
     if (!/^[0-9a-f-]{36}$/i.test(String(org_id || ""))) { res.status(403).json({ error: "Falta el negocio (org_id)" }); return; }
-    const r = await fetch(`${SB_URL}/rest/v1/organizations?id=eq.${org_id}&select=plan,status`, {
+    const r = await fetch(`${SB_URL}/rest/v1/organizations?id=eq.${org_id}&select=plan,status,trial,paid_until`, {
       headers: { apikey: SB_ANON, Authorization: auth },
     });
     const rows = r.ok ? await r.json() : [];
     if (!rows.length) { res.status(403).json({ error: "Sin acceso a este negocio" }); return; }
-    const { plan, status } = rows[0];
+    const { plan, status, trial, paid_until } = rows[0];
     if (status === "suspended") { res.status(403).json({ error: "Este negocio está suspendido" }); return; }
     if (!["pro", "elite"].includes(plan || "basico")) {
       res.status(403).json({ error: "El Asistente IA está disponible desde el plan Pro. Contacta a Aivoraia para mejorar tu plan." });
+      return;
+    }
+    // Prueba Elite vencida: la IA se apaga hasta que contraten un plan
+    if (trial && paid_until && paid_until < new Date().toISOString().slice(0, 10)) {
+      res.status(403).json({ error: "Tu prueba Elite terminó. Contrata un plan con Aivoraia para seguir usando el Asistente IA." });
       return;
     }
   } catch (e) {

@@ -31,6 +31,7 @@ alter table public.organizations add column if not exists catalog_slug text;
 alter table public.organizations add column if not exists catalog_enabled boolean default false;
 alter table public.organizations add column if not exists catalog_show_prices boolean default true;
 alter table public.organizations add column if not exists catalog_whatsapp text;
+alter table public.organizations add column if not exists trial boolean default false; -- prueba Elite gratis
 create unique index if not exists organizations_catalog_slug_key
   on public.organizations (catalog_slug) where catalog_slug is not null;
 
@@ -353,7 +354,8 @@ create policy expenses_owner_all on public.expenses for all
 -- Las funciones employee_parts, employee_sales, registrar_venta, org_members,
 -- org_add_employee, org_remove_member y crear_mi_negocio viven en
 -- supabase/migracion-equipo-registro.sql. En una base nueva, corre ese archivo
--- justo después de este.
+-- justo después de este, y luego supabase/migracion-prueba-elite.sql
+-- (prueba gratis de Elite por 15 días + catálogo que se apaga al vencer).
 
 -- ============================================================================
 --  PASO FINAL (después de registrarte por primera vez en la app):

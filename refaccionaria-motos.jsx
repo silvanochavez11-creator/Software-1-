@@ -108,8 +108,14 @@ const PLANS = {
   pro: { id: "pro", label: "Pro", price: 599, color: "#55AEEA", maxParts: 1500, maxUsers: 3, expenses: true, history: true, ai: true },
   elite: { id: "elite", label: "Elite", price: 999, color: "#d4af37", maxParts: null, maxUsers: null, expenses: true, history: true, ai: true },
 };
-const planOf = (org) => PLANS[org?.plan] || PLANS.basico;
 const isPaymentDue = (org) => !!org?.paidUntil && org.paidUntil < todayStr();
+// Si el negocio estaba en PRUEBA Elite y ya venció, funciona como plan Básico
+const planOf = (org) => (org?.trial && isPaymentDue(org)) ? PLANS.basico : (PLANS[org?.plan] || PLANS.basico);
+// Días que le quedan a la prueba (0 = vence hoy; negativo = ya venció)
+const trialDaysLeft = (org) => {
+  if (!org?.trial || !org?.paidUntil) return null;
+  return Math.ceil((new Date(org.paidUntil + "T23:59:59") - new Date()) / 86400000);
+};
 
 // Colores de marca Aivoraia: azul #1F5FD0 · cian #55AEEA · tinta #12151C
 const DEFAULT_ACCENT = "#55AEEA";
@@ -330,7 +336,7 @@ const db = {
 };
 
 /* ---- Mapeo entre la forma de la app (camelCase) y las columnas de la BD ---- */
-const orgFromDb = (r) => ({ id: r.id, name: r.name, logo: r.logo_url || "", accent: r.accent || DEFAULT_ACCENT, defaultMin: Number(r.default_min_stock) || 0, status: r.status || "active", theme: r.theme || "dark", plan: PLANS[r.plan] ? r.plan : "basico", paidUntil: r.paid_until || "", catalogSlug: r.catalog_slug || "", catalogEnabled: !!r.catalog_enabled, catalogShowPrices: r.catalog_show_prices !== false, catalogWhatsapp: r.catalog_whatsapp || "", createdAt: (r.created_at || "").slice(0, 10) });
+const orgFromDb = (r) => ({ id: r.id, name: r.name, logo: r.logo_url || "", accent: r.accent || DEFAULT_ACCENT, defaultMin: Number(r.default_min_stock) || 0, status: r.status || "active", theme: r.theme || "dark", plan: PLANS[r.plan] ? r.plan : "basico", paidUntil: r.paid_until || "", trial: !!r.trial, catalogSlug: r.catalog_slug || "", catalogEnabled: !!r.catalog_enabled, catalogShowPrices: r.catalog_show_prices !== false, catalogWhatsapp: r.catalog_whatsapp || "", createdAt: (r.created_at || "").slice(0, 10) });
 const orgToDb = (o) => { const r = { name: o.name, logo_url: o.logo || null, accent: o.accent || DEFAULT_ACCENT }; if (o.defaultMin != null) r.default_min_stock = Number(o.defaultMin) || 0; if (o.theme != null) r.theme = o.theme; if (o.plan != null) r.plan = PLANS[o.plan] ? o.plan : "basico"; if (o.paidUntil !== undefined) r.paid_until = o.paidUntil || null; if (o.catalogSlug !== undefined) r.catalog_slug = o.catalogSlug || null; if (o.catalogEnabled !== undefined) r.catalog_enabled = !!o.catalogEnabled; if (o.catalogShowPrices !== undefined) r.catalog_show_prices = !!o.catalogShowPrices; if (o.catalogWhatsapp !== undefined) r.catalog_whatsapp = o.catalogWhatsapp || null; return r; };
 
 const partFromDb = (r) => ({ id: r.id, sku: r.sku || "", name: r.name, brand: r.brand || "", category: r.category || "Otro", compat: r.compat || "", color: r.color || "", stock: Number(r.stock) || 0, minStock: Number(r.min_stock) || 0, cost: Number(r.cost) || 0, price: Number(r.price) || 0, priceWholesale: Number(r.price_wholesale) || 0 });
@@ -813,6 +819,216 @@ function PublicCatalog({ slug }) {
 }
 
 /* ============================================================================
+   Demo animada de la web pública: enseña la plataforma "cobrando vida"
+   (tablero en ceros que se llena, punto de venta generando un ticket y
+   contabilidad por día/semana/mes) + galería de pantallas reales.
+============================================================================ */
+// Número que cuenta de 0 a su valor (para las métricas de la demo)
+function CountUp({ to, run, dur = 1300, money = true }) {
+  const [v, setV] = useState(0);
+  useEffect(() => {
+    if (!run) { setV(0); return; }
+    let raf; const t0 = performance.now();
+    const tick = (t) => {
+      const p = Math.min(1, (t - t0) / dur);
+      setV(Math.round(to * (1 - Math.pow(1 - p, 3))));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [run, to, dur]);
+  return <>{money ? "$" : ""}{v.toLocaleString("es-MX")}</>;
+}
+
+// Escena 1: el tablero pasa de CEROS a métricas vivas
+function DemoSceneTablero() {
+  const [on, setOn] = useState(false);
+  useEffect(() => { const t = setTimeout(() => setOn(true), 750); return () => clearTimeout(t); }, []);
+  const bars = [35, 55, 42, 70, 52, 88, 64];
+  return (
+    <div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: on ? "#2ecc71" : "var(--muted)", marginBottom: 10, transition: "color .4s" }}>
+        {on ? "▲ Con tus ventas del día" : "Tu tablero al empezar: en ceros"}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
+        {[["Ventas de hoy", 8450, "#2ecc71", true], ["Utilidad", 3120, "var(--accent)", true], ["Tickets", 14, "var(--text)", false]].map(([label, val, color, money]) => (
+          <div key={label} style={{ background: "var(--surface)", borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 10, color: "var(--muted)" }}>{label}</div>
+            <div className="sg" style={{ fontSize: 18, fontWeight: 700, color }}><CountUp to={val} run={on} money={money} /></div>
+          </div>
+        ))}
+      </div>
+      <div style={{ background: "var(--surface)", borderRadius: 10, padding: "10px 12px" }}>
+        <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 8 }}>Ventas de la semana</div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 88 }}>
+          {bars.map((h, i) => (
+            <div key={i} style={{ flex: 1, height: on ? `${h}%` : "4%", borderRadius: 4, background: i === 5 ? "var(--accent)" : "var(--accent-soft)", transition: `height .9s cubic-bezier(.2,.8,.2,1) ${i * 90}ms` }} />
+          ))}
+        </div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#e8a13a18", border: "1px solid #e8a13a55", borderRadius: 10, padding: "8px 12px", marginTop: 8, opacity: on ? 1 : 0, transition: "opacity .6s 1s" }}>
+        <AlertTriangle size={14} color="#e8a13a" />
+        <span style={{ fontSize: 11, color: "var(--text-2)" }}>2 piezas por agotarse · lista de reorden sugerida</span>
+      </div>
+    </div>
+  );
+}
+
+// Escena 2: el punto de venta arma un carrito y genera el ticket
+function DemoScenePOS() {
+  const [step, setStep] = useState(0);
+  useEffect(() => {
+    const ts = [setTimeout(() => setStep(1), 450), setTimeout(() => setStep(2), 1250), setTimeout(() => setStep(3), 2050), setTimeout(() => setStep(4), 3100)];
+    return () => ts.forEach(clearTimeout);
+  }, []);
+  const items = [["Balatas delanteras · FT150", 1, 135], ["Aceite 20W-50 1L", 2, 145], ["Bujía NGK CR7HSA", 1, 55]];
+  const shown = items.slice(0, Math.min(step, 3));
+  const total = shown.reduce((a, [, q, p]) => a + q * p, 0);
+  return (
+    <div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", marginBottom: 10 }}>Venta en mostrador</div>
+      <div style={{ background: "var(--surface)", borderRadius: 10, padding: "6px 12px", minHeight: 118 }}>
+        {shown.map(([name, qty, price], i) => (
+          <div key={name} className="demo-pop" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: i < shown.length - 1 ? "1px solid var(--border-soft)" : "none", fontSize: 12 }}>
+            <span style={{ color: "var(--text-2)" }}>{qty} × {name}</span>
+            <span style={{ fontWeight: 700 }}>${(qty * price).toLocaleString("es-MX")}</span>
+          </div>
+        ))}
+        {step === 0 && <div style={{ padding: "10px 0", fontSize: 12, color: "var(--muted-2)" }}>Busca la pieza y tócala para agregarla…</div>}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "10px 4px 0" }}>
+        <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 700 }}>Total</span>
+        <span className="sg" style={{ fontSize: 22, fontWeight: 700 }}><CountUp to={total} run={step > 0} dur={500} /></span>
+      </div>
+      {step >= 4 ? (
+        <div className="demo-pop" style={{ display: "flex", alignItems: "center", gap: 10, background: "#2ecc7118", border: "1px solid #2ecc7155", borderRadius: 10, padding: "10px 12px", marginTop: 8 }}>
+          <Printer size={16} color="#2ecc71" />
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#2ecc71" }}>Venta #248 registrada · ticket listo para imprimir</div>
+            <div style={{ fontSize: 11, color: "var(--muted)" }}>Stock descontado solo · utilidad calculada: <b style={{ color: "var(--text-2)" }}>+$153</b></div>
+          </div>
+        </div>
+      ) : (
+        <div style={{ background: step > 0 ? "var(--accent)" : "var(--border)", color: step > 0 ? "#0c1118" : "var(--muted)", borderRadius: 10, padding: "10px 0", marginTop: 8, textAlign: "center", fontSize: 13, fontWeight: 700, transition: "background .4s" }}>
+          ✓ Cobrar y descontar de inventario
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Escena 3: contabilidad por día / semana / mes
+function DemoSceneConta() {
+  const [gran, setGran] = useState(2);
+  useEffect(() => { const t = setInterval(() => setGran(g => (g + 1) % 3), 2300); return () => clearInterval(t); }, []);
+  const DATA = [
+    { label: "Día", bars: [30, 58, 40, 66, 48, 84, 62, 44], ventas: 8450, utilidad: 3120 },
+    { label: "Semana", bars: [42, 55, 63, 58, 74, 79, 86, 92], ventas: 41200, utilidad: 15400 },
+    { label: "Mes", bars: [24, 34, 43, 52, 60, 71, 83, 96], ventas: 168300, utilidad: 61900 },
+  ];
+  const d = DATA[gran];
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", flex: 1 }}>Ingresos y utilidad</span>
+        {DATA.map((x, i) => (
+          <span key={x.label} style={{ padding: "4px 11px", borderRadius: 7, fontSize: 11, fontWeight: 700, border: gran === i ? "1px solid var(--accent)" : "1px solid var(--border)", background: gran === i ? "var(--accent-soft)" : "transparent", color: gran === i ? "var(--accent)" : "var(--muted)", transition: "all .3s" }}>{x.label}</span>
+        ))}
+      </div>
+      <div style={{ background: "var(--surface)", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 96 }}>
+          {d.bars.map((h, i) => (
+            <div key={i} style={{ flex: 1, height: `${h}%`, borderRadius: 4, background: i === d.bars.length - 1 ? "var(--accent)" : "var(--accent-soft)", transition: "height .7s cubic-bezier(.2,.8,.2,1)" }} />
+          ))}
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <div style={{ background: "var(--surface)", borderRadius: 10, padding: "9px 12px" }}>
+          <div style={{ fontSize: 10, color: "var(--muted)" }}>Ventas ({d.label.toLowerCase()})</div>
+          <div className="sg" style={{ fontSize: 17, fontWeight: 700, color: "#2ecc71" }}>${d.ventas.toLocaleString("es-MX")}</div>
+        </div>
+        <div style={{ background: "var(--surface)", borderRadius: 10, padding: "9px 12px" }}>
+          <div style={{ fontSize: 10, color: "var(--muted)" }}>Utilidad neta</div>
+          <div className="sg" style={{ fontSize: 17, fontWeight: 700, color: "var(--accent)" }}>${d.utilidad.toLocaleString("es-MX")}</div>
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 8 }}>Estado de resultados y reporte PDF para tu contador, incluidos.</div>
+    </div>
+  );
+}
+
+const DEMO_SCENES = [
+  { label: "Tablero", icon: BarChart3, C: DemoSceneTablero, caption: "Tu tablero pasa de ceros a métricas vivas con cada venta del día." },
+  { label: "Punto de venta", icon: ShoppingCart, C: DemoScenePOS, caption: "Cobra en segundos: el stock se descuenta solo y el ticket sale listo para imprimir." },
+  { label: "Contabilidad", icon: Wallet, C: DemoSceneConta, caption: "Ingresos y utilidad por día, semana o mes — sin hojas de cálculo ni libretas." },
+];
+
+function DemoShow() {
+  const [scene, setScene] = useState(0);
+  const [auto, setAuto] = useState(true);
+  useEffect(() => {
+    if (!auto) return;
+    const t = setInterval(() => setScene(s => (s + 1) % DEMO_SCENES.length), 6800);
+    return () => clearInterval(t);
+  }, [auto]);
+  const S = DEMO_SCENES[scene].C;
+  return (
+    <div style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 16, padding: 18, boxShadow: "0 24px 60px #00000055" }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+        {DEMO_SCENES.map((s, i) => (
+          <button key={s.label} onClick={() => { setScene(i); setAuto(false); }} style={{
+            display: "flex", alignItems: "center", gap: 6, padding: "6px 13px", borderRadius: 999, fontSize: 12, fontWeight: 700,
+            border: scene === i ? "1px solid var(--accent)" : "1px solid var(--border)",
+            background: scene === i ? "var(--accent-soft)" : "transparent",
+            color: scene === i ? "var(--accent)" : "var(--muted)",
+          }}>
+            <s.icon size={13} /> {s.label}
+          </button>
+        ))}
+      </div>
+      <div key={scene} className="demo-fade" style={{ minHeight: 280 }}><S /></div>
+      <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 12, lineHeight: 1.5 }}>{DEMO_SCENES[scene].caption}</div>
+    </div>
+  );
+}
+
+// Galería de pantallas reales de la plataforma (clic para ver en grande)
+const DEMO_SHOTS = [
+  { src: "/demo/tablero.webp", title: "Tablero con métricas y alertas" },
+  { src: "/demo/punto-de-venta.webp", title: "Punto de venta" },
+  { src: "/demo/ticket.webp", title: "Ticket imprimible con tu logo" },
+  { src: "/demo/inventario.webp", title: "Inventario completo" },
+  { src: "/demo/contabilidad.webp", title: "Contabilidad con gráficas" },
+  { src: "/demo/catalogo.webp", title: "Catálogo público con agente IA" },
+];
+function DemoGallery() {
+  const [open, setOpen] = useState(null);
+  return (
+    <>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12, marginTop: 30 }}>
+        {DEMO_SHOTS.map(s => (
+          <button key={s.src} onClick={() => setOpen(s)} title="Ver en grande"
+            style={{ padding: 0, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden", textAlign: "left", cursor: "zoom-in" }}>
+            <img src={s.src} alt={s.title} loading="lazy" style={{ width: "100%", display: "block", aspectRatio: "16 / 10", objectFit: "cover", objectPosition: "top" }} />
+            <div style={{ padding: "9px 12px", fontSize: 12, fontWeight: 600, color: "var(--text-2)" }}>
+              {s.title} <span style={{ color: "var(--muted-2)", fontWeight: 400 }}>· ampliar</span>
+            </div>
+          </button>
+        ))}
+      </div>
+      {open && (
+        <div onClick={() => setOpen(null)} style={{ position: "fixed", inset: 0, background: "#000d", zIndex: 80, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, cursor: "zoom-out" }}>
+          <div style={{ maxWidth: 1100, width: "100%" }}>
+            <img src={open.src} alt={open.title} style={{ width: "100%", borderRadius: 12, border: "1px solid #29323f", boxShadow: "0 30px 80px #000" }} />
+            <div style={{ textAlign: "center", color: "#c4ccd8", fontSize: 13, marginTop: 10 }}>{open.title} — toca para cerrar</div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ============================================================================
    Web pública (landing) — lo que ve un visitante antes de iniciar sesión.
    Presenta el producto y lleva al registro / inicio de sesión.
 ============================================================================ */
@@ -835,9 +1051,10 @@ function LandingPage({ onEnter }) {
   const plans = [
     { name: "Básico", price: "$299", per: "MXN/mes", hl: false, items: ["Hasta 300 productos en inventario", "1 usuario", "Tablero con métricas del mes", "Inventario manual + importación CSV", "Punto de venta con ticket", "Alertas de stock bajo", "Soporte WhatsApp en horario hábil"] },
     { name: "Pro", price: "$599", per: "MXN/mes", hl: true, badge: "⭐ Más popular", items: ["Hasta 1,500 productos", "3 usuarios", "Todo lo del Plan Básico", "Módulo de gastos completo", "Contabilidad con histórico", "Asistente IA para inventario", "Importación de facturas XML, CSV y PDF", "Soporte prioritario WhatsApp"] },
-    { name: "Elite", price: "$999", per: "MXN/mes", hl: false, items: ["Productos ilimitados", "Usuarios ilimitados", "Todo lo del Plan Pro", "Catálogo público en línea con tu enlace", "Agente IA de ventas que atiende a tus clientes", "Onboarding en persona o videollamada", "Soporte dedicado mismo día", "Configuración inicial incluida"] },
+    { name: "Elite", price: "$999", per: "MXN/mes", hl: false, trial: "🎁 Pruébalo 15 días GRATIS", items: ["Productos ilimitados", "Usuarios ilimitados", "Todo lo del Plan Pro", "Catálogo público en línea con tu enlace", "Agente IA de ventas que atiende a tus clientes", "Onboarding en persona o videollamada", "Soporte dedicado mismo día", "Configuración inicial incluida"] },
   ];
   const faqs = [
+    { q: "¿Cómo funciona la prueba gratis del plan Elite?", a: "Al crear tu cuenta, tu negocio arranca con 15 días del plan Elite completo (valor $999): productos y usuarios ilimitados, asistente IA, catálogo en línea y agente IA de ventas. No pedimos tarjeta. Al terminar, tu negocio sigue funcionando en plan Básico con todos tus datos, y si te gustó contratas el plan que quieras." },
     { q: "¿Necesito instalar algo?", a: "No. Funciona en el navegador de cualquier computadora, tablet o celular con internet. Tus datos se guardan en la nube y puedes entrar desde donde estés." },
     { q: "¿Sirve para refaccionarias que no son de motos?", a: "Sí. Las categorías de piezas son configurables y el flujo de inventario, ventas y gastos es el mismo para cualquier refaccionaria o negocio de mostrador." },
     { q: "¿Puedo pasar mi inventario actual?", a: "Sí. Puedes importar un archivo CSV con tus piezas, o subir tus facturas (CSV, XML/CFDI o PDF) y el asistente de IA las convierte en inventario por ti." },
@@ -871,6 +1088,10 @@ function LandingPage({ onEnter }) {
         details.ld-faq summary::after { content: "+"; color: var(--accent); font-size: 18px; font-weight: 700; }
         details.ld-faq[open] summary::after { content: "–"; }
         details.ld-faq p { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 10px 0 2px; }
+        .demo-fade { animation: demoFade .5s ease; }
+        @keyframes demoFade { from { opacity: 0; transform: translateY(8px); } }
+        .demo-pop { animation: demoPop .4s cubic-bezier(.2,.8,.2,1); }
+        @keyframes demoPop { from { opacity: 0; transform: translateY(6px) scale(.98); } }
         @media (max-width: 860px) {
           .ld-hero { grid-template-columns: 1fr; padding: 40px 0 40px; gap: 32px; }
           .ld-nav-links { display: none; }
@@ -886,6 +1107,7 @@ function LandingPage({ onEnter }) {
           </div>
           <div className="ld-nav-links">
             <a href="#funciones" style={navLink}>Funciones</a>
+            <a href="#demo" style={navLink}>Demo</a>
             <a href="#como-funciona" style={navLink}>Cómo funciona</a>
             <a href="#precios" style={navLink}>Precios</a>
             <a href="#faq" style={navLink}>Preguntas</a>
@@ -913,14 +1135,14 @@ function LandingPage({ onEnter }) {
             </p>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <button onClick={() => onEnter("register")} style={{ ...btnGold, padding: "12px 22px", fontSize: 14 }}>
-                Empezar ahora <ArrowRight size={15} />
+                🎁 Probar Elite 15 días gratis <ArrowRight size={15} />
               </button>
               <button onClick={() => onEnter("login")} style={{ ...btnGhost, padding: "12px 22px", fontSize: 14, color: "var(--text-2)" }}>
                 Ya tengo cuenta
               </button>
             </div>
             <div style={{ display: "flex", gap: 18, marginTop: 26, flexWrap: "wrap" }}>
-              {["Sin instalar nada", "Datos en la nube", "En español"].map(t => (
+              {["Sin tarjeta", "Sin instalar nada", "Datos en la nube", "En español"].map(t => (
                 <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--muted)" }}>
                   <Check size={13} color="#2ecc71" /> {t}
                 </span>
@@ -985,6 +1207,21 @@ function LandingPage({ onEnter }) {
         </div>
       </div>
 
+      {/* ---- Demo: la plataforma en acción + pantallas reales ---- */}
+      <div id="demo" style={{ padding: "64px 0", borderTop: "1px solid var(--border-soft)" }}>
+        <div className="ld-wrap">
+          {sectionTitle("Demostración", "Míralo en acción", "Así cobra vida tu negocio: el tablero pasa de ceros a métricas reales, el punto de venta genera tickets y la contabilidad se arma sola por día, semana y mes.")}
+          <div style={{ maxWidth: 620, margin: "0 auto" }}>
+            <DemoShow />
+          </div>
+          <div style={{ textAlign: "center", marginTop: 34, marginBottom: 4 }}>
+            <div className="sg" style={{ fontSize: 19, fontWeight: 700 }}>Pantallas reales de la plataforma</div>
+            <div style={{ color: "var(--muted)", fontSize: 13, marginTop: 6 }}>Toca cualquiera para verla en grande.</div>
+          </div>
+          <DemoGallery />
+        </div>
+      </div>
+
       {/* ---- Cómo funciona ---- */}
       <div id="como-funciona" style={{ padding: "64px 0", borderTop: "1px solid var(--border-soft)", background: "var(--card)" }}>
         <div className="ld-wrap">
@@ -1017,6 +1254,11 @@ function LandingPage({ onEnter }) {
                 <div style={{ margin: "12px 0 16px" }}>
                   <span className="sg" style={{ fontSize: 32, fontWeight: 700 }}>{p.price}</span>
                   <span style={{ fontSize: 12, color: "var(--muted)" }}> {p.per}</span>
+                  {p.trial && (
+                    <div style={{ marginTop: 8, display: "inline-block", background: "#d4af3722", border: "1px solid #d4af37", color: "#d4af37", fontSize: 12, fontWeight: 700, borderRadius: 999, padding: "4px 12px" }}>
+                      {p.trial} <span style={{ fontWeight: 500 }}>· sin tarjeta</span>
+                    </div>
+                  )}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 9, marginBottom: 20 }}>
                   {p.items.map(it => (
@@ -1030,8 +1272,8 @@ function LandingPage({ onEnter }) {
                     </span>
                   )}
                 </div>
-                <button onClick={() => onEnter("register")} style={{ ...(p.hl ? btnGold : btnGhost), width: "100%", justifyContent: "center", marginTop: "auto" }}>
-                  Empezar
+                <button onClick={() => onEnter("register")} style={{ ...(p.hl || p.trial ? btnGold : btnGhost), width: "100%", justifyContent: "center", marginTop: "auto" }}>
+                  {p.trial ? "Probar 15 días gratis" : "Empezar"}
                 </button>
               </div>
             ))}
@@ -1056,9 +1298,9 @@ function LandingPage({ onEnter }) {
       <div style={{ padding: "72px 0", borderTop: "1px solid var(--border-soft)", background: "var(--card)", textAlign: "center" }}>
         <div className="ld-wrap">
           <div className="sg" style={{ fontSize: 30, fontWeight: 700, marginBottom: 10 }}>Pon tu refaccionaria en orden hoy</div>
-          <div style={{ color: "var(--muted)", fontSize: 14, marginBottom: 26 }}>Crea tu cuenta gratis y carga tu inventario en minutos.</div>
+          <div style={{ color: "var(--muted)", fontSize: 14, marginBottom: 26 }}>Crea tu cuenta y estrena el plan Elite completo, 15 días gratis y sin tarjeta.</div>
           <button onClick={() => onEnter("register")} style={{ ...btnGold, padding: "13px 26px", fontSize: 14, display: "inline-flex" }}>
-            Crear mi cuenta <ArrowRight size={15} />
+            🎁 Probar Elite 15 días gratis <ArrowRight size={15} />
           </button>
         </div>
       </div>
@@ -1224,6 +1466,7 @@ function CreateOrgScreen({ email, onCreated, onSignOut, onRetry }) {
   const [name, setName] = useState("");
   const [logo, setLogo] = useState("");
   const [accent, setAccent] = useState(DEFAULT_ACCENT);
+  const [trial, setTrial] = useState(true); // prueba Elite de 15 días (gratis, sin tarjeta)
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -1231,7 +1474,7 @@ function CreateOrgScreen({ email, onCreated, onSignOut, onRetry }) {
     if (name.trim().length < 2) return setErr("Ponle nombre a tu negocio.");
     setBusy(true); setErr(null);
     try {
-      await db.rpc("crear_mi_negocio", { name_in: name.trim(), logo_in: logo || null, accent_in: accent });
+      await db.rpc("crear_mi_negocio", { name_in: name.trim(), logo_in: logo || null, accent_in: accent, trial_in: trial });
       await onCreated();
     } catch (e) { setErr(e.message || "No se pudo crear el negocio. Intenta de nuevo."); }
     finally { setBusy(false); }
@@ -1274,12 +1517,21 @@ function CreateOrgScreen({ email, onCreated, onSignOut, onRetry }) {
               </div>
             </div>
           </div>
+          {/* Prueba Elite: 15 días gratis, sin tarjeta */}
+          <label style={{ display: "flex", alignItems: "flex-start", gap: 10, marginTop: 14, background: "#d4af3715", border: `1px solid ${trial ? "#d4af37" : "var(--border)"}`, borderRadius: 12, padding: "12px 14px", cursor: "pointer" }}>
+            <input type="checkbox" checked={trial} onChange={e => setTrial(e.target.checked)} style={{ width: 16, height: 16, marginTop: 2 }} />
+            <span style={{ fontSize: 12, lineHeight: 1.6, color: "var(--text-2)" }}>
+              <b style={{ color: "#d4af37" }}>🎁 Empezar con 15 días GRATIS del plan Elite</b> (valor $999):
+              productos y usuarios ilimitados, asistente IA, catálogo público en línea y agente IA de ventas.
+              <span style={{ color: "var(--muted)" }}> Sin tarjeta y sin compromiso: al terminar, tu negocio sigue en plan Básico con todos tus datos.</span>
+            </span>
+          </label>
           {err && <div style={{ color: "#e25c5c", fontSize: 12, marginTop: 12 }}>{err}</div>}
           <button onClick={create} disabled={busy || name.trim().length < 2} style={{ ...btnGold, width: "100%", justifyContent: "center", marginTop: 14, opacity: busy || name.trim().length < 2 ? 0.6 : 1 }}>
-            {busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />} Crear mi refaccionaria y entrar
+            {busy ? <Loader2 size={15} className="spin" /> : <Check size={15} />} {trial ? "Crear mi negocio y probar Elite gratis" : "Crear mi refaccionaria y entrar"}
           </button>
           <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 10, lineHeight: 1.6, textAlign: "center" }}>
-            Empiezas en el plan <b>Básico</b>. Puedes cambiar el nombre, logo y color cuando quieras.
+            {trial ? "Tu prueba Elite dura 15 días; después decides si contratas un plan." : "Empiezas en el plan Básico."} Puedes cambiar el nombre, logo y color cuando quieras.
           </div>
         </Card>
 
@@ -1610,6 +1862,7 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
                       <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                         <div className="sg" style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{o.name}</div>
                         <span style={{ fontSize: 10, fontWeight: 700, color: plan.color, border: `1px solid ${plan.color}`, borderRadius: 6, padding: "1px 7px", flexShrink: 0 }}>{plan.label}</span>
+                        {o.trial && <span style={{ fontSize: 10, fontWeight: 700, color: "#d4af37", border: "1px solid #d4af37", borderRadius: 6, padding: "1px 7px", flexShrink: 0 }} title={isPaymentDue(o) ? "Prueba Elite vencida" : `Prueba Elite hasta ${o.paidUntil}`}>{isPaymentDue(o) ? "PRUEBA VENCIDA" : "PRUEBA"}</span>}
                       </div>
                       <div style={{ fontSize: 11, color: "var(--muted-2)", display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                         {suspended
@@ -1929,6 +2182,23 @@ function ShopApp({ org: orgProp, onExit, isAdmin, role = "owner" }) {
             </button>
           </div>
         </div>
+
+        {/* Aviso de la prueba Elite (solo lo ve el dueño) */}
+        {!isEmployee && org.trial && trialDaysLeft(org) != null && (
+          trialDaysLeft(org) >= 0 ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, background: "#d4af3715", border: "1px solid #d4af3766", borderRadius: 10, padding: "9px 14px", fontSize: 12, color: "var(--text-2)", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 14 }}>🎁</span>
+              <b style={{ color: "#d4af37" }}>Prueba Elite: te quedan {trialDaysLeft(org)} día{trialDaysLeft(org) === 1 ? "" : "s"} gratis.</b>
+              <span style={{ color: "var(--muted)" }}>Contrata tu plan por WhatsApp con Aivoraia y no pierdes nada al terminar.</span>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, background: "#e8a13a15", border: "1px solid #e8a13a66", borderRadius: 10, padding: "9px 14px", fontSize: 12, color: "var(--text-2)", flexWrap: "wrap" }}>
+              <AlertTriangle size={14} color="#e8a13a" />
+              <b style={{ color: "#e8a13a" }}>Tu prueba Elite terminó.</b>
+              <span style={{ color: "var(--muted)" }}>Tu negocio sigue funcionando en plan Básico con todos tus datos. Contrata un plan con Aivoraia para reactivar las funciones Pro/Elite.</span>
+            </div>
+          )
+        )}
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 4, marginTop: 18, borderBottom: "1px solid var(--border-soft)", flexWrap: "wrap" }}>
