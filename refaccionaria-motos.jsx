@@ -2558,6 +2558,30 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket, e
   const [histQ, setHistQ] = useState(""); // buscador del historial de ventas
   const [saleType, setSaleType] = useState("menudeo"); // menudeo | mayoreo
   const [charging, setCharging] = useState(false); // evita doble cobro (modo vendedor)
+  const [editSale, setEditSale] = useState(null); // venta que el dueño está corrigiendo
+  const [delSale, setDelSale] = useState(null);   // venta pendiente de eliminar (confirmación)
+
+  // --- Corrección de ventas (solo dueño/admin) ---
+  // Guarda la venta corregida y ajusta el stock por la diferencia de cantidades
+  // (deltas: partId -> cuánto REGRESAR al stock; negativo = descontar más).
+  const applySaleEdit = (updated, deltas) => {
+    setSales(prev => prev.map(s => s.id === updated.id ? updated : s));
+    if (deltas && deltas.size) {
+      setParts(prev => prev.map(p => deltas.has(p.id) ? { ...p, stock: Math.max(0, (Number(p.stock) || 0) + deltas.get(p.id)) } : p));
+    }
+    setEditSale(null);
+    showToast(`Venta #${updated.folio} corregida`);
+  };
+  // Elimina la venta completa y regresa sus piezas al inventario
+  const deleteSale = (s) => {
+    setSales(prev => prev.filter(x => x.id !== s.id));
+    setParts(prev => prev.map(p => {
+      const line = (s.items || []).find(i => i.partId === p.id);
+      return line ? { ...p, stock: (Number(p.stock) || 0) + (Number(line.qty) || 0) } : p;
+    }));
+    setDelSale(null);
+    showToast(`Venta #${s.folio} eliminada; sus piezas volvieron al inventario`);
+  };
 
   // Precio que corresponde a una pieza según el tipo de venta
   const priceFor = (p, type = saleType) =>
@@ -2739,6 +2763,8 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket, e
               <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={{ fontWeight: 600 }}>{fmt(s.total)}{!employeeMode && <span style={{ color: "#2ecc71", fontWeight: 500 }}> (+{fmt0(s.profit)})</span>}</span>
                 <button onClick={() => onTicket && onTicket(s)} style={iconBtn} title="Reimprimir ticket"><Printer size={14} /></button>
+                {!employeeMode && <button onClick={() => setEditSale(s)} style={iconBtn} title="Corregir venta (precios, costos o cantidades)"><Pencil size={14} /></button>}
+                {!employeeMode && <button onClick={() => setDelSale(s)} style={{ ...iconBtn, color: "#e25c5c" }} title="Eliminar venta (regresa las piezas al inventario)"><Trash2 size={14} /></button>}
               </span>
             </div>
           ))}
@@ -2791,6 +2817,120 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket, e
           </>
         )}
       </Card>
+
+      {/* Corregir una venta (solo dueño/admin) */}
+      {editSale && (
+        <SaleEditModal sale={editSale} parts={parts} onSave={applySaleEdit} onClose={() => setEditSale(null)} />
+      )}
+
+      {/* Confirmación para eliminar una venta (solo dueño/admin) */}
+      {delSale && (
+        <div className="no-print" onClick={() => setDelSale(null)} style={{ position: "fixed", inset: 0, background: "#000a", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, zIndex: 60 }}>
+          <div onClick={e => e.stopPropagation()} style={{ width: 400, maxWidth: "100%", background: "var(--card)", border: "1px solid #e25c5c", borderRadius: 14, padding: 22 }}>
+            <div className="sg" style={{ fontSize: 16, fontWeight: 700, color: "#e25c5c", display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <AlertTriangle size={18} /> ¿Eliminar la venta #{delSale.folio}?
+            </div>
+            <div style={{ fontSize: 13, color: "var(--text-2)", marginBottom: 18, lineHeight: 1.5 }}>
+              Se borrará de la contabilidad y sus {delSale.items.reduce((a, i) => a + (Number(i.qty) || 0), 0)} pieza(s) regresarán al inventario. Esta acción no se puede deshacer.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setDelSale(null)} style={{ ...btnGhost, flex: 1, justifyContent: "center" }}><X size={15} /> Cancelar</button>
+              <button onClick={() => deleteSale(delSale)} style={{ ...btnDanger, flex: 1, justifyContent: "center" }}><Trash2 size={15} /> Sí, eliminar</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Corregir una venta ya registrada (dueño/admin) ----------
+   Para equivocaciones al cobrar: precio mal puesto (ej. se cobró al costo),
+   costo mal capturado o cantidad equivocada. Recalcula total, costo y
+   utilidad, y ajusta el stock por la diferencia de cantidades. */
+function SaleEditModal({ sale, parts, onSave, onClose }) {
+  const [customer, setCustomer] = useState(sale.customer || "");
+  const [items, setItems] = useState((sale.items || []).map(i => ({ ...i, qty: Number(i.qty) || 1, price: Number(i.price) || 0, cost: Number(i.cost) || 0 })));
+  const [err, setErr] = useState(null);
+
+  const upd = (idx, field, val) => setItems(prev => prev.map((it, i) => i === idx
+    ? { ...it, [field]: field === "qty" ? Math.max(1, parseInt(val) || 1) : Math.max(0, parseFloat(val) || 0) }
+    : it));
+  const removeLine = (idx) => setItems(prev => prev.filter((_, i) => i !== idx));
+
+  const total = items.reduce((a, i) => a + i.qty * i.price, 0);
+  const cogs = items.reduce((a, i) => a + i.qty * i.cost, 0);
+  const profit = total - cogs;
+
+  const save = () => {
+    if (!items.length) return setErr("La venta debe tener al menos una pieza. Si quieres cancelarla completa, mejor elimínala.");
+    // Diferencia de cantidades por pieza: positivo = regresar al stock
+    const deltas = new Map();
+    for (const orig of (sale.items || [])) {
+      if (!orig.partId) continue;
+      const now = items.find(i => i.partId === orig.partId);
+      const d = (Number(orig.qty) || 0) - (now ? now.qty : 0);
+      if (d !== 0) deltas.set(orig.partId, (deltas.get(orig.partId) || 0) + d);
+    }
+    // Si se AUMENTÓ una cantidad, valida que haya stock para cubrir la diferencia
+    for (const [pid, d] of deltas) {
+      if (d < 0) {
+        const p = parts.find(p => p.id === pid);
+        if (p && (Number(p.stock) || 0) < -d) return setErr(`No hay stock suficiente de "${p.name}" para aumentar la cantidad (disponibles: ${p.stock}).`);
+      }
+    }
+    onSave({ ...sale, customer: customer.trim(), items, total, cogs, profit }, deltas);
+  };
+
+  return (
+    <div className="no-print" onClick={onClose} style={{ position: "fixed", inset: 0, background: "#000a", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 24, overflowY: "auto", zIndex: 60 }}>
+      <div onClick={e => e.stopPropagation()} style={{ width: 560, maxWidth: "100%", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 14, padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <Pencil size={17} color="var(--accent)" />
+          <span className="sg" style={{ fontSize: 16, fontWeight: 700 }}>Corregir venta #{sale.folio}</span>
+          <span style={{ fontSize: 12, color: "var(--muted-2)" }}>· {sale.date}{sale.time ? ` ${sale.time}` : ""}</span>
+          <span style={{ flex: 1 }} />
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)" }}><X size={16} /></button>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12, lineHeight: 1.5 }}>
+          Ajusta el precio cobrado, el costo o la cantidad de cada pieza. El stock se ajusta solo por la diferencia de cantidades.
+        </div>
+
+        {items.map((it, idx) => (
+          <div key={idx} style={{ padding: "10px 0", borderBottom: "1px solid var(--border-soft)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {it.name}{it.color ? ` (${it.color})` : ""}
+              </div>
+              <span style={{ fontWeight: 600, fontSize: 13, minWidth: 70, textAlign: "right" }}>{fmt0(it.qty * it.price)}</span>
+              {items.length > 1 && <button onClick={() => removeLine(idx)} style={{ ...iconBtn, color: "#e25c5c" }} title="Quitar esta pieza de la venta (regresa al stock)"><Trash2 size={14} /></button>}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6, flexWrap: "wrap" }}>
+              <span style={miniLbl}>cant.</span>
+              <input type="number" min={1} value={it.qty} onChange={e => upd(idx, "qty", e.target.value)} style={{ width: 62, padding: "5px 7px" }} />
+              <span style={miniLbl}>precio cobrado</span>
+              <input type="number" min={0} value={it.price} onChange={e => upd(idx, "price", e.target.value)} style={{ width: 84, padding: "5px 7px" }} />
+              <span style={miniLbl}>costo</span>
+              <input type="number" min={0} value={it.cost} onChange={e => upd(idx, "cost", e.target.value)} style={{ width: 84, padding: "5px 7px" }} />
+              <span style={{ fontSize: 11, color: (it.price - it.cost) >= 0 ? "#2ecc71" : "#e25c5c" }}>
+                utilidad {fmt0((it.price - it.cost) * it.qty)}
+              </span>
+            </div>
+          </div>
+        ))}
+
+        <input placeholder="Cliente (opcional)" value={customer} onChange={e => setCustomer(e.target.value)} style={{ width: "100%", marginTop: 12 }} />
+        <div style={{ marginTop: 12, padding: "10px 0", borderTop: "1px solid var(--border)" }}>
+          <Row label="Total" value={fmt(total)} big />
+          <Row label="Costo de mercancía" value={fmt(cogs)} muted />
+          <Row label="Utilidad de la venta" value={fmt(profit)} color={profit >= 0 ? "#2ecc71" : "#e25c5c"} />
+        </div>
+        {err && <div style={{ color: "#e25c5c", fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>{err}</div>}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={save} style={{ ...btnGold, flex: 1, justifyContent: "center" }}><Check size={15} /> Guardar corrección</button>
+          <button onClick={onClose} style={{ ...btnGhost, flex: 1, justifyContent: "center" }}><X size={15} /> Cancelar</button>
+        </div>
+      </div>
     </div>
   );
 }

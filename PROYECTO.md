@@ -127,6 +127,10 @@ Se aplican en 3 capas: UI (candados y topes), base de datos (triggers `parts_lim
   **lee fotografías** de libretas de inventario o estantes (visión, hasta 12 fotos por tanda).
 - Piezas con **color** (columna `color`; correr `supabase/migracion-color.sql` en bases ya creadas).
 - Historial de ventas con buscador (folio/cliente/fecha/pieza) y **reimpresión de tickets** con fecha y hora.
+- **Corrección y eliminación de ventas (solo dueño/admin)**: desde el historial del punto
+  de venta se puede corregir una venta equivocada (precio cobrado, costo o cantidades;
+  recalcula total/utilidad y ajusta el stock por la diferencia) o eliminarla por completo
+  (las piezas regresan al inventario). El vendedor no puede.
 - Avisos de stock: campana con contador, niveles de color, aviso al vender, lista de reorden.
 - Personalización por negocio: nombre, logo, color de marca, tema claro/oscuro, stock mínimo por defecto.
 - Recuperación de contraseña por correo.
