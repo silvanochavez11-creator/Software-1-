@@ -148,6 +148,11 @@ Se aplican en 3 capas: UI (candados y topes), base de datos (triggers `parts_lim
   3 escenas animadas (tablero de ceros a métricas, punto de venta generando ticket,
   contabilidad por día/semana/mes) + galería de capturas reales (`public/demo/*.webp`)
   con visor en grande. CTAs de "Probar Elite 15 días gratis" en hero, precios y cierre.
+- **WhatsApp de ventas + Píxel de Meta (anuncios)**: botón flotante de WhatsApp en la
+  landing (número en la constante `VENTAS_WHATSAPP`; hoy +52 962 252 6823, mensaje
+  precargado). Píxel de Meta preparado en la constante `META_PIXEL_ID` (vacía = apagado):
+  al pegarle el ID del píxel se registran PageView, Contact (clic al WhatsApp),
+  CompleteRegistration (registro) y StartTrial (prueba Elite activada, valor $999 MXN).
 
 > ⚠️ **Migraciones pendientes de correr en Supabase** (una vez, en el SQL Editor):
 > 1. `supabase/migracion-equipo-registro.sql` — roles dueño/vendedor + registro automático. ✅ (ya corrida el 2026-07-04)
