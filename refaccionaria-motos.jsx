@@ -126,7 +126,7 @@ const VENTAS_WA_LINK = `https://wa.me/${VENTAS_WHATSAPP}?text=${encodeURICompone
    (un número largo) en META_PIXEL_ID y listo: se registran PageView, el clic
    al WhatsApp (Contact), los registros (CompleteRegistration) y las pruebas
    Elite activadas (StartTrial). Con el ID vacío no hace nada. */
-const META_PIXEL_ID = "";
+const META_PIXEL_ID = "1303570781554342";
 const fbTrack = (...args) => { try { window.fbq && window.fbq(...args); } catch (e) {} };
 function initMetaPixel() {
   if (!META_PIXEL_ID) return;
