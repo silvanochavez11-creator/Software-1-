@@ -125,6 +125,10 @@ Se aplican en 3 capas: UI (candados y topes), base de datos (triggers `parts_lim
   Gastos, Contabilidad (estado de resultados por Hoy/Semana/Mes/Histórico, gráficas por día/semana/mes).
 - Asistente IA (GPT): maneja inventario por texto, importa archivos (CSV/XML/CFDI/PDF) y
   **lee fotografías** de libretas de inventario o estantes (visión, hasta 12 fotos por tanda).
+- **Fotos de las piezas (identificación visual)**: además de la libreta, el usuario puede
+  fotografiar la refacción física (o su empaque) y gpt-4o identifica qué pieza es, marca,
+  categoría, color y compatibilidad si viene impresa; cuenta unidades si se ven varias.
+  Costo y precio quedan en 0 para que el dueño los ponga en la vista previa antes de guardar.
 - Piezas con **color** (columna `color`; correr `supabase/migracion-color.sql` en bases ya creadas).
 - Historial de ventas con buscador (folio/cliente/fecha/pieza) y **reimpresión de tickets** con fecha y hora.
 - **Corrección y eliminación de ventas (solo dueño/admin)**: desde el historial del punto

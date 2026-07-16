@@ -3557,6 +3557,7 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
   const [error, setError] = useState(null);
   const [fileBusy, setFileBusy] = useState(false);
   const [photoMsg, setPhotoMsg] = useState(null); // progreso de la lectura de fotos
+  const [photoMode, setPhotoMode] = useState(null); // qué botón de fotos está trabajando
 
   const importFile = async (file) => {
     if (!file) return;
@@ -3657,41 +3658,58 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
     }
   };
 
-  // Fotos de libreta / estante: comprime, las manda por lotes a la IA con visión
+  // Instrucciones de visión según lo que retrata el usuario:
+  // - 'libreta': páginas de libreta o estantes con etiquetas (lee renglones)
+  // - 'piezas' : fotos de las refacciones físicas (identifica qué pieza es)
+  const PHOTO_MODES = {
+    libreta: {
+      batch: 2, // pocas fotos por llamada para que la IA lea con calma cada página
+      label: "de inventario",
+      emptyMsg: "No pude leer piezas en las fotos. Procura buena luz, la página completa y bien enfocada.",
+      instruction: "Estas FOTOGRAFÍAS son páginas de una libreta de inventario de una refaccionaria (escritas a mano o impresas) o estantes con etiquetas. Lee la página COMPLETA, renglón por renglón, de arriba hacia abajo, incluyendo los renglones de los bordes. Por cada renglón o pieza legible crea una operación 'create': 'name' con la descripción tal como está escrita (corrigiendo solo ortografía obvia y abreviaturas comunes de refacciones), 'stock' con la cantidad si aparece, 'cost' con el costo si aparece y 'price' con el precio de venta si aparece. Ojo con la notación mexicana: '1,250' es mil doscientos cincuenta y '$85' son 85 pesos; las columnas suelen ser cantidad | descripción | precio. Si solo hay UN precio, asume que es el de venta ('price') y deja 'cost' en 0. Incluye 'brand', 'compat' (modelo de moto) y 'color' cuando se distingan. Si una pieza ya existe en el INVENTARIO ACTUAL, usa 'restock' en lugar de 'create'. NO inventes piezas ni números: si un renglón no se lee con claridad, omítelo por completo.",
+    },
+    piezas: {
+      batch: 3,
+      label: "de piezas",
+      emptyMsg: "No pude reconocer refacciones en las fotos. Toma la pieza de cerca, con buena luz y de frente (si tiene etiqueta o empaque, que se vea).",
+      instruction: "Estas FOTOGRAFÍAS muestran REFACCIONES DE MOTO fotografiadas directamente (en la mano, el mostrador o su empaque), NO una libreta. Analiza CADA foto e identifica qué pieza es. Por cada pieza reconocible crea una operación 'create': 'name' = nombre comercial claro y específico de la refacción en español de México (ej. 'Balatas delanteras', 'Kit de arrastre', 'Bujía CR7HSA', 'Filtro de aire', 'Manija de freno'); 'brand' SOLO si el logo o la etiqueta se lee con claridad; 'category' la que corresponda; 'color' cuando sea un dato útil de la pieza; 'compat' SOLO si el modelo de moto está impreso en la pieza o su empaque — NO lo adivines. 'stock': si en la foto se ven varias unidades IGUALES, cuenta cuántas; si no, pon 1. Deja 'cost' y 'price' en 0: el dueño los captura al revisar. Si la pieza ya existe en el INVENTARIO ACTUAL (mismo tipo, marca y modelo), usa 'restock' con las unidades vistas. Si una foto no muestra una refacción reconocible, omítela por completo — nunca inventes.",
+    },
+  };
+
+  // Fotos (libreta o piezas): comprime, las manda por lotes a la IA con visión
   // y junta todo lo leído en UNA sola vista previa editable antes de guardar.
-  const importPhotos = async (fileList) => {
+  const importPhotos = async (fileList, mode = "libreta") => {
     const files = Array.from(fileList || []).filter(f => f.type.startsWith("image/")).slice(0, 12);
     if (!files.length) return;
-    setError(null); setPreview(null);
+    const M = PHOTO_MODES[mode] || PHOTO_MODES.libreta;
+    setError(null); setPreview(null); setPhotoMode(mode);
     setPhotoMsg(`Preparando ${files.length} foto${files.length > 1 ? "s" : ""}…`);
     try {
       const imgs = [];
-      // Más resolución = mejor lectura de letra manuscrita
+      // Más resolución = mejor lectura de letra manuscrita y etiquetas
       for (const f of files) imgs.push(await fileToJpeg(f, 2000, 0.85));
-      const BATCH = 2; // pocas fotos por llamada para que la IA lea con calma cada página
       const all = [];
       let lastError = null;
-      const instruction = "Estas FOTOGRAFÍAS son páginas de una libreta de inventario de una refaccionaria (escritas a mano o impresas) o estantes con etiquetas. Lee la página COMPLETA, renglón por renglón, de arriba hacia abajo, incluyendo los renglones de los bordes. Por cada renglón o pieza legible crea una operación 'create': 'name' con la descripción tal como está escrita (corrigiendo solo ortografía obvia y abreviaturas comunes de refacciones), 'stock' con la cantidad si aparece, 'cost' con el costo si aparece y 'price' con el precio de venta si aparece. Ojo con la notación mexicana: '1,250' es mil doscientos cincuenta y '$85' son 85 pesos; las columnas suelen ser cantidad | descripción | precio. Si solo hay UN precio, asume que es el de venta ('price') y deja 'cost' en 0. Incluye 'brand', 'compat' (modelo de moto) y 'color' cuando se distingan. Si una pieza ya existe en el INVENTARIO ACTUAL, usa 'restock' en lugar de 'create'. NO inventes piezas ni números: si un renglón no se lee con claridad, omítelo por completo.";
-      for (let i = 0; i < imgs.length; i += BATCH) {
-        const upto = Math.min(imgs.length, i + BATCH);
-        setPhotoMsg(imgs.length > BATCH ? `Leyendo con IA las fotos ${i + 1}–${upto} de ${imgs.length}…` : "Leyendo las fotos con IA…");
+      for (let i = 0; i < imgs.length; i += M.batch) {
+        const upto = Math.min(imgs.length, i + M.batch);
+        setPhotoMsg(imgs.length > M.batch ? `Leyendo con IA las fotos ${i + 1}–${upto} de ${imgs.length}…` : "Leyendo las fotos con IA…");
         try {
-          // gpt-4o (el modelo grande) lee manuscritos mucho mejor que el económico
-          const built = await askOps(instruction, imgs.slice(i, upto), "gpt-4o");
+          // gpt-4o (el modelo grande) lee fotos mucho mejor que el económico
+          const built = await askOps(M.instruction, imgs.slice(i, upto), "gpt-4o");
           all.push(...built);
         } catch (e) { lastError = e; }
       }
       if (!all.length) {
-        setError((lastError && lastError.message) || "No pude leer piezas en las fotos. Procura buena luz, la página completa y bien enfocada.");
+        setError((lastError && lastError.message) || M.emptyMsg);
         return;
       }
-      setText(`📷 ${files.length} foto${files.length > 1 ? "s" : ""} de inventario`);
+      setText(`📷 ${files.length} foto${files.length > 1 ? "s" : ""} ${M.label}`);
       setPreview(all);
       if (lastError) showToast("Algunas fotos no se pudieron leer; revisa la vista previa");
     } catch (e) {
       setError(e.message || "No pude procesar las fotos.");
     } finally {
-      setPhotoMsg(null);
+      setPhotoMsg(null); setPhotoMode(null);
     }
   };
 
@@ -3768,15 +3786,23 @@ function Asistente({ parts, setParts, showToast, defaultMin = 0, org = null, max
           <span style={{ fontSize: 12, color: "var(--muted-2)" }}>o</span>
           <label style={{ ...btnGhost, cursor: (loading || fileBusy || photoMsg) ? "default" : "pointer", opacity: (loading || fileBusy || photoMsg) ? 0.6 : 1 }}
             title="Toma fotos de tu libreta de inventario o del estante; la IA las lee y te muestra la lista para revisar. Puedes elegir varias fotos a la vez.">
-            {photoMsg ? <Loader2 size={15} className="spin" /> : <Camera size={15} />}
-            {photoMsg || "Fotos de libreta / estante"}
+            {photoMode === "libreta" ? <Loader2 size={15} className="spin" /> : <Camera size={15} />}
+            {photoMode === "libreta" ? photoMsg : "Fotos de tu libreta"}
             <input type="file" accept="image/*" multiple hidden disabled={loading || fileBusy || !!photoMsg}
-              onChange={e => { const fs = e.target.files; const arr = fs ? Array.from(fs) : []; e.target.value = ""; if (arr.length) importPhotos(arr); }} />
+              onChange={e => { const fs = e.target.files; const arr = fs ? Array.from(fs) : []; e.target.value = ""; if (arr.length) importPhotos(arr, "libreta"); }} />
+          </label>
+          <span style={{ fontSize: 12, color: "var(--muted-2)" }}>o</span>
+          <label style={{ ...btnGhost, cursor: (loading || fileBusy || photoMsg) ? "default" : "pointer", opacity: (loading || fileBusy || photoMsg) ? 0.6 : 1 }}
+            title="Tómale fotos a las piezas (o a su empaque) y la IA identifica qué refacción es: tú solo revisas y le pones precio. Puedes elegir varias fotos a la vez.">
+            {photoMode === "piezas" ? <Loader2 size={15} className="spin" /> : <Camera size={15} />}
+            {photoMode === "piezas" ? photoMsg : "Fotos de las piezas"}
+            <input type="file" accept="image/*" multiple hidden disabled={loading || fileBusy || !!photoMsg}
+              onChange={e => { const fs = e.target.files; const arr = fs ? Array.from(fs) : []; e.target.value = ""; if (arr.length) importPhotos(arr, "piezas"); }} />
           </label>
         </div>
         <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 8 }}>
-          El importador lee facturas de proveedor (incluyendo XML CFDI del SAT), listas CSV y PDFs con texto. Con las fotos, puedes retratar tu libreta página por página (hasta 12 fotos por tanda) y la IA convierte lo escrito en inventario para que lo revises antes de guardar.
-          <span style={{ display: "block", marginTop: 4, color: "var(--accent)" }}>📸 Consejo: toma las fotos DE CERCA, con buena luz y la letra grande y nítida — mejor dos fotos cercanas (mitad y mitad de la página) que una foto lejana de la página entera.</span>
+          El importador lee facturas de proveedor (incluyendo XML CFDI del SAT), listas CSV y PDFs con texto. Con <b>Fotos de tu libreta</b> retratas tu libreta página por página y la IA convierte lo escrito en inventario. Con <b>Fotos de las piezas</b> le tomas foto a la refacción (o a su empaque) y la IA identifica qué es, su marca y color — tú solo revisas, le pones costo y precio, y guardas. Hasta 12 fotos por tanda.
+          <span style={{ display: "block", marginTop: 4, color: "var(--accent)" }}>📸 Consejo: fotos DE CERCA y con buena luz. Libreta: mejor dos fotos cercanas (mitad y mitad de la página) que una lejana. Piezas: que se vea la etiqueta o el empaque si lo tiene.</span>
         </div>
         {error && <div style={{ color: "#e25c5c", fontSize: 12, marginTop: 10 }}>{error}</div>}
         <datalist id="part-colors">{PART_COLORS.map(c => <option key={c} value={c} />)}</datalist>
