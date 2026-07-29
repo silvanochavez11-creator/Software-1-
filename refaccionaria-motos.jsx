@@ -468,6 +468,8 @@ export default function RefaccionariaSaaS() {
     const m = window.location.pathname.match(/^\/c\/([a-z0-9-]+)\/?$/i);
     return m ? m[1].toLowerCase() : null;
   }, []);
+  // Página de diagnóstico: aivoraia.com/diagnostico
+  const isDiagnostico = useMemo(() => /^\/diagnostico\/?$/i.test(window.location.pathname), []);
   const [booting, setBooting] = useState(true);
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -558,6 +560,7 @@ export default function RefaccionariaSaaS() {
   const onAuthed = async () => { setSession(_session); await loadMe(); setScreen("home"); };
   const doSignOut = async () => { await signOut(); setSession(null); setProfile(null); setOrgs([]); setRoles({}); setActiveOrgId(null); setScreen("home"); setRecovery(false); setAuthIntent(null); };
 
+  if (isDiagnostico) return <><GlobalStyles /><Diagnostico /></>;
   if (catalogSlug) return <><GlobalStyles /><PublicCatalog slug={catalogSlug} /></>;
   if (booting) return <><GlobalStyles /><Splash /></>;
   if (recovery) return <><GlobalStyles /><ResetPasswordScreen onDone={async () => { setRecovery(false); setSession(_session); await loadMe(); setScreen("home"); }} onCancel={doSignOut} /></>;
@@ -601,6 +604,106 @@ function ScreenShell({ children, accent = DEFAULT_ACCENT }) {
 
 function Splash() {
   return <ScreenShell><Loader2 size={28} className="spin" color="var(--accent)" /></ScreenShell>;
+}
+
+/* ============================================================================
+   Diagnóstico — aivoraia.com/diagnostico
+   Página sin login para saber por qué falla la conexión y repararla.
+============================================================================ */
+// Borra service workers, cachés y datos locales de la app, y recarga limpio
+async function repararApp() {
+  try {
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.unregister()));
+    }
+  } catch (e) {}
+  try { const keys = await caches.keys(); await Promise.all(keys.map(k => caches.delete(k))); } catch (e) {}
+  window.location.replace(`/?limpio=${Date.now()}`);
+}
+
+function Diagnostico() {
+  const [tests, setTests] = useState([]);
+  const [running, setRunning] = useState(true);
+  const [sw, setSw] = useState("revisando…");
+
+  const build = (typeof __BUILD_TIME__ !== "undefined") ? __BUILD_TIME__ : "desconocida";
+
+  useEffect(() => {
+    (async () => {
+      const out = [];
+      const push = (name, ok, detail) => { out.push({ name, ok, detail }); setTests([...out]); };
+
+      push("Internet del dispositivo", navigator.onLine, navigator.onLine ? "Conectado" : "El navegador dice que NO hay internet");
+
+      // 1) ¿Responde el servidor de la base de datos?
+      try {
+        const t0 = Date.now();
+        const r = await fetch(`${SB_URL}/auth/v1/health`, { headers: { apikey: SB_KEY } });
+        push("Servidor de datos (Supabase)", r.ok, `Respondió ${r.status} en ${Date.now() - t0} ms`);
+      } catch (e) {
+        push("Servidor de datos (Supabase)", false, `NO se pudo conectar: ${e.message}. Puede estar caído/pausado, o algo en tu red o una extensión del navegador lo está bloqueando.`);
+      }
+
+      // 2) ¿Funciona el inicio de sesión? (con datos falsos: esperamos un rechazo, no un error de red)
+      try {
+        const r = await fetch(`${SB_URL}/auth/v1/token?grant_type=password`, {
+          method: "POST", headers: { apikey: SB_KEY, "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "prueba-diagnostico@aivoraia.com", password: "x" }),
+        });
+        push("Inicio de sesión (login)", r.status === 400 || r.status === 401 || r.ok,
+          r.status === 400 || r.status === 401 ? "OK: el servidor contesta correctamente (rechazó una contraseña falsa, como debe ser)" : `Respondió ${r.status}`);
+      } catch (e) {
+        push("Inicio de sesión (login)", false, `Falla de red: ${e.message}`);
+      }
+
+      // 3) ¿Responde la propia app en Vercel?
+      try {
+        const r = await fetch(`/manifest.webmanifest?t=${Date.now()}`, { cache: "no-store" });
+        push("Servidor de la app (Vercel)", r.ok, `Respondió ${r.status}`);
+      } catch (e) {
+        push("Servidor de la app (Vercel)", false, `Falla: ${e.message}`);
+      }
+
+      try {
+        const regs = ("serviceWorker" in navigator) ? await navigator.serviceWorker.getRegistrations() : [];
+        setSw(regs.length ? `${regs.length} registrado(s) · ${navigator.serviceWorker.controller ? "controlando esta página" : "sin controlar"}` : "ninguno");
+      } catch (e) { setSw("no disponible"); }
+
+      setRunning(false);
+    })();
+  }, []);
+
+  return (
+    <ScreenShell>
+      <div style={{ width: 560, maxWidth: "100%" }}>
+        <div style={{ textAlign: "center", marginBottom: 18 }}>
+          <img src="/aivoraia-symbol-light-512.png" alt="" style={{ width: 44, height: 44, objectFit: "contain", marginBottom: 8 }} />
+          <div className="sg" style={{ fontSize: 20, fontWeight: 700 }}>Diagnóstico de Aivoraia</div>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Versión cargada: {String(build).slice(0, 16).replace("T", " ")} · Service worker: {sw}</div>
+        </div>
+        <Card>
+          {tests.map(t => (
+            <div key={t.name} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 0", borderBottom: "1px solid var(--border-soft)" }}>
+              <span style={{ fontSize: 16, lineHeight: "20px" }}>{t.ok ? "✅" : "❌"}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>{t.name}</div>
+                <div style={{ fontSize: 12, color: t.ok ? "var(--muted)" : "#e25c5c", marginTop: 2, lineHeight: 1.5 }}>{t.detail}</div>
+              </div>
+            </div>
+          ))}
+          {running && <div style={{ fontSize: 12, color: "var(--muted)", padding: "10px 0" }}><Loader2 size={13} className="spin" /> Probando…</div>}
+          <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+            <button onClick={repararApp} style={btnGold}>🧹 Reparar app (limpiar y recargar)</button>
+            <a href="/" style={{ ...btnGhost, textDecoration: "none" }}>Ir al inicio</a>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted-2)", marginTop: 12, lineHeight: 1.6 }}>
+            "Reparar app" borra el service worker y las cachés guardadas en ESTE dispositivo (no borra ningún dato de tu negocio) y vuelve a cargar la versión más nueva.
+          </div>
+        </Card>
+      </div>
+    </ScreenShell>
+  );
 }
 
 /* ============================================================================
@@ -1429,6 +1532,13 @@ function AuthScreen({ onAuthed, initialMode = "login", onBack }) {
             </>
           )}
           {error && <div style={{ color: "#e25c5c", fontSize: 12, marginBottom: 10 }}>{error}</div>}
+          {/* Si es una falla de conexión, ofrece limpiar la app en este dispositivo */}
+          {error && /conectar|fetch|network|red/i.test(error) && (
+            <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+              <button onClick={repararApp} style={{ ...btnGhost, padding: "6px 10px", fontSize: 11 }}>🧹 Reparar app</button>
+              <a href="/diagnostico" style={{ ...btnGhost, padding: "6px 10px", fontSize: 11, textDecoration: "none" }}>Ver diagnóstico</a>
+            </div>
+          )}
           {info && <div style={{ color: "#2ecc71", fontSize: 12, marginBottom: 10 }}>{info}</div>}
           <button onClick={submit} disabled={busy} style={{ ...btnGold, width: "100%", justifyContent: "center" }}>
             {busy ? <Loader2 size={15} className="spin" /> : (mode === "login" ? <LogIn size={15} /> : mode === "register" ? <UserPlus size={15} /> : <Mail size={15} />)}
