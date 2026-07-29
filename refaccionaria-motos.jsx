@@ -21,7 +21,33 @@ const PART_COLORS = ["Negro", "Blanco", "Rojo", "Azul", "Verde", "Amarillo", "Na
 const EXPENSE_CATS = ["Compra a proveedor", "Renta", "Servicios (luz/agua/internet)", "Sueldos", "Publicidad", "Mantenimiento", "Impuestos", "Otro"];
 
 const uid = () => crypto.randomUUID();
-const todayStr = () => new Date().toISOString().slice(0, 10);
+// Fecha de HOY en la zona horaria del negocio (NO en UTC): si usáramos
+// toISOString(), en México toda venta después de las 6 pm se guardaría con
+// la fecha del día siguiente y descuadraría el corte del día.
+const todayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+/* ---- Fechas legibles en español (ej. "5 jun 26") ----
+   Se arman con texto plano, sin objetos Date, para que nunca se recorra un
+   día por la zona horaria. */
+const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const MESES_LARGO = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const ymd = (s) => {
+  const [y, m, d] = String(s || "").slice(0, 10).split("-").map(Number);
+  return (y && m) ? { y, m, d: d || 1 } : null;
+};
+// "2026-06-05" -> "5 jun 26"
+const fmtDate = (s) => { const p = ymd(s); return p ? `${p.d} ${MESES[p.m - 1]} ${String(p.y).slice(2)}` : (s || ""); };
+// "2026-06-05" -> "5 jun" (sin año, para gráficas)
+const fmtDayMonth = (s) => { const p = ymd(s); return p ? `${p.d} ${MESES[p.m - 1]}` : (s || ""); };
+// "2026-06" -> "jun 26"
+const fmtMonth = (s) => { const p = ymd(s); return p ? `${MESES[p.m - 1]} ${String(p.y).slice(2)}` : (s || ""); };
+// "2026-06-05" -> "5 de junio de 2026"
+const fmtDateLong = (s) => { const p = ymd(s); return p ? `${p.d} de ${MESES_LARGO[p.m - 1]} de ${p.y}` : (s || ""); };
+// Fecha + hora: "5 jun 26 · 07:42 p.m."
+const fmtDateTime = (s, time) => `${fmtDate(s)}${time ? ` · ${time}` : ""}`;
 
 // Agrupación de fechas por periodo para las gráficas
 const weekStart = (dateStr) => {
@@ -32,7 +58,8 @@ const weekStart = (dateStr) => {
   return dt.toISOString().slice(0, 10);
 };
 const bucketOf = (dateStr, gran) => gran === "day" ? dateStr.slice(0, 10) : gran === "week" ? weekStart(dateStr) : dateStr.slice(0, 7);
-const bucketLabel = (key, gran) => gran === "month" ? key : key.slice(5); // mes: 2026-06 · día/semana: MM-DD
+// Etiquetas de las gráficas: mes -> "jun 26" · día/semana -> "5 jun"
+const bucketLabel = (key, gran) => gran === "month" ? fmtMonth(key) : fmtDayMonth(key);
 const GRAN_KEEP = { day: 14, week: 12, month: 12 }; // cuántos periodos mostrar
 const GranToggle = ({ gran, setGran }) => (
   <div style={{ display: "flex", gap: 4 }}>
@@ -2019,15 +2046,15 @@ function AdminPanel({ orgs, reload, onEnter, onSignOut, adminEmail }) {
                       <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                         <div className="sg" style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{o.name}</div>
                         <span style={{ fontSize: 10, fontWeight: 700, color: plan.color, border: `1px solid ${plan.color}`, borderRadius: 6, padding: "1px 7px", flexShrink: 0 }}>{plan.label}</span>
-                        {o.trial && <span style={{ fontSize: 10, fontWeight: 700, color: "#d4af37", border: "1px solid #d4af37", borderRadius: 6, padding: "1px 7px", flexShrink: 0 }} title={isPaymentDue(o) ? "Prueba Elite vencida" : `Prueba Elite hasta ${o.paidUntil}`}>{isPaymentDue(o) ? "PRUEBA VENCIDA" : "PRUEBA"}</span>}
+                        {o.trial && <span style={{ fontSize: 10, fontWeight: 700, color: "#d4af37", border: "1px solid #d4af37", borderRadius: 6, padding: "1px 7px", flexShrink: 0 }} title={isPaymentDue(o) ? "Prueba Elite vencida" : `Prueba Elite hasta ${fmtDate(o.paidUntil)}`}>{isPaymentDue(o) ? "PRUEBA VENCIDA" : "PRUEBA"}</span>}
                       </div>
                       <div style={{ fontSize: 11, color: "var(--muted-2)", display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
                         {suspended
                           ? <span style={{ color: "#e25c5c", fontWeight: 700 }}>● Suspendida</span>
-                          : <><span style={{ width: 10, height: 10, borderRadius: 3, background: o.accent || DEFAULT_ACCENT, display: "inline-block" }} />{o.createdAt || ""}</>}
+                          : <><span style={{ width: 10, height: 10, borderRadius: 3, background: o.accent || DEFAULT_ACCENT, display: "inline-block" }} />{fmtDate(o.createdAt)}</>}
                         {overdue
-                          ? <span style={{ color: "#e25c5c", fontWeight: 700 }}>· Pago vencido ({o.paidUntil})</span>
-                          : o.paidUntil && <span style={{ color: "#2ecc71" }}>· Pagado hasta {o.paidUntil}</span>}
+                          ? <span style={{ color: "#e25c5c", fontWeight: 700 }}>· Pago vencido ({fmtDate(o.paidUntil)})</span>
+                          : o.paidUntil && <span style={{ color: "#2ecc71" }}>· Pagado hasta {fmtDate(o.paidUntil)}</span>}
                       </div>
                     </div>
                   </div>
@@ -3186,7 +3213,7 @@ function PuntoDeVenta({ parts, setParts, sales, setSales, showToast, onTicket, e
         <div style={{ maxHeight: histQ.trim() ? 340 : 220, overflowY: "auto" }}>
           {histResults.map(s => (
             <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--border-soft)", fontSize: 12 }}>
-              <span style={{ color: "var(--muted)" }}>{s.folio ? `#${s.folio} · ` : ""}{s.date}{s.time ? ` ${s.time}` : ""} · {s.items.reduce((a, i) => a + i.qty, 0)} pza{s.customer ? ` · ${s.customer}` : ""}</span>
+              <span style={{ color: "var(--muted)" }}>{s.folio ? `#${s.folio} · ` : ""}{fmtDateTime(s.date, s.time)} · {s.items.reduce((a, i) => a + i.qty, 0)} pza{s.customer ? ` · ${s.customer}` : ""}</span>
               <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={{ fontWeight: 600 }}>{fmt(s.total)}{!employeeMode && <span style={{ color: "#2ecc71", fontWeight: 500 }}> (+{fmt0(s.profit)})</span>}</span>
                 <button onClick={() => onTicket && onTicket(s)} style={iconBtn} title="Reimprimir ticket"><Printer size={14} /></button>
@@ -3315,7 +3342,7 @@ function SaleEditModal({ sale, parts, onSave, onClose }) {
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
           <Pencil size={17} color="var(--accent)" />
           <span className="sg" style={{ fontSize: 16, fontWeight: 700 }}>Corregir venta #{sale.folio}</span>
-          <span style={{ fontSize: 12, color: "var(--muted-2)" }}>· {sale.date}{sale.time ? ` ${sale.time}` : ""}</span>
+          <span style={{ fontSize: 12, color: "var(--muted-2)" }}>· {fmtDateTime(sale.date, sale.time)}</span>
           <span style={{ flex: 1 }} />
           <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)" }}><X size={16} /></button>
         </div>
@@ -3410,7 +3437,7 @@ function Gastos({ expenses, setExpenses, showToast }) {
             <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: "1px solid var(--border-soft)" }}>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{e.category}{e.note ? ` · ${e.note}` : ""}</div>
-                <div style={{ fontSize: 11, color: "var(--muted-2)" }}>{e.date}</div>
+                <div style={{ fontSize: 11, color: "var(--muted-2)" }}>{fmtDate(e.date)}</div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontWeight: 700, fontSize: 13, color: "#e25c5c" }}>−{fmt(e.amount)}</span>
@@ -3453,9 +3480,9 @@ function printMonthlyReport({ org, shop, sales, expenses, month }) {
   const top = [...counter.values()].sort((a, b) => b.qty - a.qty).slice(0, 10);
 
   const [y, m] = month.split("-").map(Number);
-  const monthLabel = new Date(Date.UTC(y, m - 1, 15)).toLocaleDateString("es-MX", { month: "long", year: "numeric", timeZone: "UTC" });
+  const monthLabel = `${MESES_LARGO[m - 1]} de ${y}`;
   const bizName = escapeHtml(shop?.name || org?.name || "Refaccionaria");
-  const today = new Date().toLocaleDateString("es-MX", { day: "numeric", month: "long", year: "numeric" });
+  const today = fmtDateLong(todayStr());
 
   const row = (label, value, opts = {}) =>
     `<tr${opts.strong ? ' class="strong"' : ""}><td>${label}</td><td class="num">${value}</td></tr>`;
@@ -4383,7 +4410,7 @@ function TicketModal({ sale, shop, setShop, logo, onClose }) {
           </div>
           <div style={{ borderTop: "1px dashed #000", borderBottom: "1px dashed #000", padding: "6px 0", margin: "6px 0" }}>
             <div style={{ display: "flex", justifyContent: "space-between" }}><span>Ticket:</span><span>#{sale.folio}</span></div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}><span>Fecha:</span><span>{sale.date} {sale.time || ""}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}><span>Fecha:</span><span>{fmtDate(sale.date)} {sale.time || ""}</span></div>
             {sale.type === "mayoreo" && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Tipo:</span><span>Mayoreo</span></div>}
             {sale.customer && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Cliente:</span><span>{sale.customer}</span></div>}
           </div>
