@@ -62,6 +62,17 @@ El aislamiento entre negocios lo garantiza RLS por `org_id` (funciones `is_admin
 
 > ⚠️ NUNCA poner en el frontend ni compartir: la llave `service_role` de Supabase ni la `sk-...` de OpenAI.
 
+## 🚨 Si la app dice "Failed to fetch" / "No pudimos conectar"
+
+Abrir **`aivoraia.com/diagnostico`**: prueba internet, servidor de datos, login y servidor de la app,
+y muestra la versión cargada y el service worker. Tiene botón **"Reparar app"** (borra service worker
+y cachés del dispositivo; no toca datos del negocio).
+
+**Causa más común: el proyecto de Supabase se PAUSÓ** (plan gratuito: se pausa por inactividad o
+al rozar los límites). Se ve en el dashboard de Supabase y se arregla con **"Restore project"**
+(en español mal traducido aparece como "Proyecto de currículum"). Los datos no se pierden.
+👉 Con clientes de pago conviene el **plan Pro de Supabase (~$25 USD/mes)**, que no se pausa.
+
 ## 💳 Planes y límites (SaaS)
 
 Cada refaccionaria tiene un **plan** (`basico | pro | elite`) y una fecha **pagado hasta**
