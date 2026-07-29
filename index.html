@@ -25,9 +25,14 @@
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
     <script>
-      // Registra el service worker para que la app se pueda instalar en el celular
+      // Registra el service worker para que la app se pueda instalar en el celular.
+      // update() fuerza a reemplazar de inmediato cualquier versión anterior.
       if ("serviceWorker" in navigator) {
-        window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("/sw.js")
+            .then(reg => { try { reg.update(); } catch (e) {} })
+            .catch(() => {});
+        });
       }
     </script>
   </body>

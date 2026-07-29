@@ -226,11 +226,17 @@ function saveSession(d) {
 }
 
 async function sbAuth(path, body) {
-  const res = await fetch(`${SB_URL}/auth/v1/${path}`, {
-    method: "POST",
-    headers: { apikey: SB_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  let res;
+  try {
+    res = await fetch(`${SB_URL}/auth/v1/${path}`, {
+      method: "POST",
+      headers: { apikey: SB_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    // Error de red (sin internet, servidor no alcanzable, extensión que bloquea…)
+    throw new Error("No pudimos conectar con el servidor. Revisa tu internet y vuelve a intentar. Si sigue fallando, recarga la página con Ctrl+Shift+R.");
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(data.error_description || data.msg || data.message || "Error de autenticación");
